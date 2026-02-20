@@ -14,12 +14,12 @@ SLOTS = [
     "第二节\n9:05-9:50",   # 2
     "第三节\n10:15-11:00", # 3
     "第四节\n11:00-11:45", # 4
-    "第五节\n14:00-14:45", # 5 (单节专属)
-    "第六节\n14:55-15:40", # 6 (保护自习/走班)
+    "第五节\n14:00-14:45", # 5 
+    "第六节\n14:55-15:40", # 6 
     "第七节\n15:50-16:35", # 7
     "第八节\n16:45-18:15", # 8
-    "第九节\n19:00-20:30", # 9  (晚修正课1)
-    "第十节\n20:50-22:30"  # 10 (晚修正课2)
+    "第九节\n19:00-20:30", # 9  (晚修1)
+    "第十节\n20:50-22:30"  # 10 (晚修2)
 ]
 DAYTIME_SLOTS = SLOTS[1:9]
 
@@ -28,23 +28,46 @@ SUBJECT_COLORS = {
     "走班": "#FFFF99", "语文": "#FFE4E1", "数学": "#E4F1FF", "英语": "#E0FFFF", 
     "物理": "#E8F5E9", "化学": "#FFFACD", "生物": "#FCE4EC", "政治": "#FFDAB9", 
     "历史": "#FFE4B5", "地理": "#E1BEE7", "体育": "#C8E6C9", "音乐": "#E1BEE7", 
-    "美术": "#FFCCBC", "班会": "#B3E5FC", "晚自习": "#F8F9FA", "自习": "#F8F9FA" 
+    "美术": "#FFCCBC", "班会": "#B3E5FC", "晚自习": "#F8F9FA", "自习": "#F8F9FA",
+    "信息": "#E0F7FA", "通用": "#F5F5F5"
 }
 
-st.set_page_config(page_title="教务排课系统", layout="wide")
+st.set_page_config(page_title="全校通用排课系统", layout="wide")
 
 # ================= 初始化缓存记忆 =================
-if 'schedule_result' not in st.session_state:
-    st.session_state['schedule_result'] = None
-if 'schedule_classes' not in st.session_state:
-    st.session_state['schedule_classes'] = None
+if 'schedule_result' not in st.session_state: st.session_state['schedule_result'] = None
+if 'schedule_classes' not in st.session_state: st.session_state['schedule_classes'] = None
+
+# ================= 侧边栏：全局规则配置中心 =================
+with st.sidebar:
+    st.header("⚙️ 引擎参数设置")
+    
+    st.markdown("### 1. 班级名称配置")
+    class_prefix = st.text_input("班级前缀 (如: 高一 / 高三理科)", value="高一")
+    class_suffix = st.text_input("班级后缀", value="班")
+    st.caption("💡 提示：若 Excel 填了 1,2,3，系统将自动生成：前缀+1+后缀")
+    
+    st.markdown("### 2. 年级规则模式")
+    grade_mode = st.radio(
+        "选择作息规则", 
+        ["高一 / 高二 (仅周一至周五晚修)", "高三 (包含周日晚修)"]
+    )
+    st.caption("💡 提示：高一高二模式下，系统会自动避开周末排课。")
 
 # ================= 2. 核心排课引擎 =================
 class Scheduler:
-    def __init__(self, teacher_df, rule_df):
+    def __init__(self, teacher_df, prefix, suffix, grade_mode):
         self.teacher_data = teacher_df.fillna("") 
         self.classes = set()
         self.teacher_busy = {} 
+        self.prefix = prefix
+        self.suffix = suffix
+        
+        # 动态设置晚修天数 (如果是高一高二，周末彻底休息)
+        if "高三" in grade_mode:
+            self.evening_days = ['周一', '周二', '周三', '周四', '周五', '周日']
+        else:
+            self.evening_days = ['周一', '周二', '周三', '周四', '周五']
 
     def parse_tasks(self):
         tasks = []
@@ -74,8 +97,9 @@ class Scheduler:
 
             if hours <= 0 or not t_name or not raw_classes: continue
 
+            # === 动态扩展班级：自动拼接前缀和后缀 ===
             class_nums = re.findall(r'\d+', raw_classes)
-            target_classes = [f"理科{n}班" for n in class_nums] 
+            target_classes = [f"{self.prefix}{n}{self.suffix}" for n in class_nums] 
             for c in target_classes: self.classes.add(c)
 
             if "Block_ZouBan" in constraint or "走班" in sub or "走班" in t_name:
@@ -84,8 +108,14 @@ class Scheduler:
                 for c in target_classes:
                     tasks.append({'class': c, 'teacher': t_name, 'subject': sub, 'hours': hours, 'constraint': constraint})
 
-        self.classes = sorted(list(self.classes)) 
-        if not self.classes: self.classes = ['未命名班级'] 
+        # === 动态排序，支持无数个班 ===
+        # 使用自定义排序确保 "高一1班", "高一2班", ..., "高一10班" 的顺序正确
+        def sort_key(c_str):
+            nums = re.findall(r'\d+', c_str)
+            return int(nums[0]) if nums else 0
+            
+        self.classes = sorted(list(self.classes), key=sort_key) 
+        if not self.classes: self.classes = [f'{self.prefix}1{self.suffix}'] 
         return tasks, zouban_tasks
 
     def get_booked_count(self, c_name, subject, day):
@@ -116,10 +146,9 @@ class Scheduler:
             return {c: {day: {slot: "" for slot in SLOTS} for day in DAYS} for c in self.classes}, 0
 
         PAIRS = [(SLOTS[1], SLOTS[2]), (SLOTS[3], SLOTS[4]), (SLOTS[7], SLOTS[8])]
-        EVENING_DAYS = ['周一', '周二', '周三', '周四', '周五', '周日']
         
         best_schedule = None
-        best_score = 9999
+        best_score = 99999
         
         for attempt in range(100):
             tasks = copy.deepcopy(self.original_tasks)
@@ -131,7 +160,7 @@ class Scheduler:
             for z_task in zouban_tasks:
                 if z_task['hours'] < 2: continue
                 placed = False
-                days = list(EVENING_DAYS)
+                days = list(self.evening_days)
                 random.shuffle(days)
                 for day in days:
                     if all(self.is_free_for(c, z_task['teacher'], z_task['subject'], day, [SLOTS[9], SLOTS[10]]) for c in z_task['classes']):
@@ -147,7 +176,7 @@ class Scheduler:
 
             eve_placed_ok = True
             eve_assigned = {c: set() for c in self.classes}
-            for day in EVENING_DAYS:
+            for day in self.evening_days:
                 cls_list = list(self.classes)
                 random.shuffle(cls_list)
                 for c in cls_list:
@@ -246,7 +275,7 @@ class Scheduler:
                     if not placed: break
                     
             unplaced = sum(t['hours'] for t in tasks) + sum(t['hours'] for t in zouban_tasks)
-            empty_eve = sum(1 for c in self.classes for day in EVENING_DAYS for s in [SLOTS[9], SLOTS[10]] if self.schedules[c][day][s] == "")
+            empty_eve = sum(1 for c in self.classes for day in self.evening_days for s in [SLOTS[9], SLOTS[10]] if self.schedules[c][day][s] == "")
             score = unplaced * 10 + empty_eve
             
             if score < best_score:
@@ -259,7 +288,7 @@ class Scheduler:
         for c in self.classes:
             for day in DAYS[:5]:
                 if self.schedules[c][day][SLOTS[6]] == "": self.schedules[c][day][SLOTS[6]] = "自习"
-            for day in EVENING_DAYS:
+            for day in self.evening_days:
                 for s in [SLOTS[9], SLOTS[10]]:
                     if self.schedules[c][day][s] == "": self.schedules[c][day][s] = "晚自习"
 
@@ -269,7 +298,7 @@ class Scheduler:
 def render_class_table(class_name, schedule):
     html = f"""
     <div id="table-{class_name}" style="font-family: 'SimSun', '宋体', sans-serif; max-width: 1050px; margin: auto; background-color: white; padding: 20px;">
-        <h2 style="text-align: center; color: red; letter-spacing: 2px;">呼和浩特市英华学校高三{class_name}课程表</h2>
+        <h2 style="text-align: center; color: red; letter-spacing: 2px;">呼和浩特市英华学校 {class_name} 课程表</h2>
         <table border="1" style="width: 100%; text-align: center; border-collapse: collapse; border-color: #333; font-size: 16px;">
             <tr style="background-color: #f8f9fa;">
                 <th style="padding: 12px;">时间 \\ 星期</th>
@@ -324,7 +353,6 @@ def render_class_table(class_name, schedule):
 
 # ================= 4. 导出工具集 =================
 def export_to_excel(schedules, classes):
-    """将课表数据转为多Sheet的Excel文件"""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         for c_name in classes:
@@ -340,8 +368,8 @@ def export_to_excel(schedules, classes):
     return output.getvalue()
 
 # ================= 5. 前端交互 =================
-st.title("🏫 智能排课系统 (缓存不丢失版)")
-uploaded_file = st.file_uploader("请上传合并后的 Excel 排课数据", type=['xlsx', 'xls'])
+st.title("🏫 英华学校智能排课系统 (全校通用版)")
+uploaded_file = st.file_uploader("请先在左侧侧边栏设置年级和班级前缀，然后上传排课数据 Excel", type=['xlsx', 'xls'])
 
 if uploaded_file:
     all_sheets = pd.read_excel(uploaded_file, sheet_name=None)
@@ -353,47 +381,39 @@ if uploaded_file:
         for name, df in all_sheets.items():
             if len(df) > 5 and len(df.columns) >= 3: teacher_df = df
 
-    # 生成按钮逻辑：只负责计算并写入缓存
-    if st.button("🚀 生成神仙课表", type="primary"):
-        with st.spinner("算力全开！正在分配班级与老师..."):
-            scheduler = Scheduler(teacher_df, pd.DataFrame())
+    if st.button("🚀 根据当前设置生成课表", type="primary"):
+        with st.spinner(f"正在以【{grade_mode}】规则进行排课计算..."):
+            scheduler = Scheduler(teacher_df, class_prefix, class_suffix, grade_mode)
             result, total_tasks = scheduler.run()
             
             if total_tasks == 0:
                 st.error("❌ 未抓取到数据，请检查 Excel 表头。")
             else:
-                # 写入长期记忆
                 st.session_state['schedule_result'] = result
                 st.session_state['schedule_classes'] = scheduler.classes
 
-# 如果缓存里有数据，就一直显示结果和下载按钮（点击下载后依然会显示）
 if st.session_state['schedule_result'] is not None:
     st.success("✅ 完美排课成功！请在下方查看结果并导出。")
     
     result = st.session_state['schedule_result']
     classes = st.session_state['schedule_classes']
     
-    # ==== 导出工具栏 ====
     col1, col2 = st.columns([1, 3])
     with col1:
         excel_data = export_to_excel(result, classes)
         st.download_button(
             label="📊 导出所有班级到 Excel",
             data=excel_data,
-            file_name="英华学校_高三排课结果.xlsx",
+            file_name=f"排课结果_{class_prefix}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     with col2:
         components.html("""
             <button onclick="window.parent.print()" style="padding: 8px 15px; background-color: #FF4B4B; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; font-family: sans-serif;">
-                🖨️ 打印课表 / 保存为 PDF
+                🖨️ 打印课表 / 保存为彩色 PDF
             </button>
-            <span style="font-size: 13px; color: #555; margin-left: 10px;">
-                💡 <b>提示：</b> 在弹出的打印窗口中选“<b>另存为 PDF</b>”，并勾选“<b>背景图形</b>”即可保留颜色！
-            </span>
         """, height=50)
 
-    # ==== 展示课表 ====
     tabs = st.tabs(classes)
     for idx, c_name in enumerate(classes):
         with tabs[idx]:
