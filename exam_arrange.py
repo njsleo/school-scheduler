@@ -15,30 +15,25 @@ class ExamScheduler:
     def __init__(self, student_df, capacity):
         self.student_data = student_df.fillna("")
         self.capacity = int(capacity)
-        self.subject_students = {}  # {科目名: [学生数据列表]}
+        self.subject_students = {} 
 
     def parse_data(self):
         """解析学生数据，归类每个科目的参考名单"""
         for _, row in self.student_data.iterrows():
-            # 提取基础信息
             student_info = {
-                '准考证号': row.get('准考证号', ''),
-                '姓名': row.get('姓名', ''),
-                '行政班': row.get('行政班', ''),
-                '身份证号': row.get('身份证号', '')
+                '准考证号': str(row.get('准考证号', '')),
+                '姓名': str(row.get('姓名', '')),
+                '行政班': str(row.get('行政班', '')),
+                '身份证号': str(row.get('身份证号', ''))
             }
             
-            # 提取该学生需要考的所有科目
-            # 默认公共科
             subjects = ['语文', '数学']
             
-            # 提取表格中的动态科目
             for col in ['语种', '科类', '选考1', '选考2']:
                 sub = str(row.get(col, '')).strip()
                 if sub and sub != 'nan':
                     subjects.append(sub)
                     
-            # 归入各个科目的参考池
             for sub in set(subjects):
                 if sub not in self.subject_students:
                     self.subject_students[sub] = []
@@ -50,7 +45,7 @@ class ExamScheduler:
         exam_results = {}
         
         for subject, students in self.subject_students.items():
-            # 1. 按照行政班排序（确保同班同学聚在一起，方便后续打散）
+            # 1. 按照行政班排序
             students_sorted = sorted(students, key=lambda x: x['行政班'])
             
             total_students = len(students_sorted)
@@ -59,8 +54,7 @@ class ExamScheduler:
             # 2. 计算需要多少个考场
             num_rooms = math.ceil(total_students / self.capacity)
             
-            # 3. 核心：生成“蛇形打散”的考场座位坑位表
-            # 逻辑：先遍历座位号，再遍历考场号，像发牌一样把同班同学发到不同考场
+            # 3. 蛇形生成坑位
             available_spots = []
             for seat in range(1, self.capacity + 1):
                 for room in range(1, num_rooms + 1):
@@ -79,15 +73,15 @@ class ExamScheduler:
                     '考试科目': subject
                 })
             
-            # 5. 按照 考场号 -> 座位号 重新排序，生成最终该科目的考场表
-            arranged_list = sorted(arranged_list, key=lambda x: (x['考场号'], x['座位号']))
-            exam_results[subject] = pd.DataFrame(arranged_list)
+            # 5. 【核心修复】改用 pandas 的安全排序法，彻底杜绝 KeyError
+            df = pd.DataFrame(arranged_list)
+            df = df.sort_values(by=['考场号', '座位号'])
+            exam_results[subject] = df
             
         return exam_results
 
 # ================= 导出工具 =================
 def export_to_excel(results_dict):
-    """导出为包含多个科目Sheet的Excel"""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         for subject, df in results_dict.items():
@@ -102,14 +96,14 @@ with st.sidebar:
     room_capacity = st.number_input("每个考场最大人数", min_value=10, max_value=60, value=30, step=1)
     st.caption("💡 提示：系统采用【蛇形发牌法】，会自动打散同行政班的学生，有效防止作弊。")
 
-uploaded_file = st.file_uploader("请上传考生信息 Excel 文件", type=['xlsx', 'xls', 'csv'])
+uploaded_file = st.file_uploader("请上传考生信息 Excel/CSV 文件", type=['xlsx', 'xls', 'csv'])
 
 if uploaded_file:
-    # 兼容 CSV 和 Excel
+    # 【核心修复】加入 dtype=str 强制文本读取，防止长数字变成科学计数法
     if uploaded_file.name.endswith('.csv'):
-        student_df = pd.read_csv(uploaded_file)
+        student_df = pd.read_csv(uploaded_file, dtype=str)
     else:
-        student_df = pd.read_excel(uploaded_file)
+        student_df = pd.read_excel(uploaded_file, dtype=str)
         
     st.success(f"✅ 成功读取 {len(student_df)} 名考生数据！")
     
@@ -148,15 +142,11 @@ if st.session_state['exam_result'] is not None:
         """, height=50)
 
     st.markdown("### 👁️ 考场预览")
-    # 创建标签页供教务处查看不同科目
     tabs = st.tabs(subjects)
     for idx, subject in enumerate(subjects):
         with tabs[idx]:
             df = result[subject]
-            # 统计数据面板
             room_count = df['考场号'].nunique()
             student_count = len(df)
             st.info(f"📍 **{subject}** 共有 **{student_count}** 人参考，共需安排 **{room_count}** 个考场。")
-            
-            # 交互式表格展示
             st.dataframe(df, use_container_width=True, height=400)
