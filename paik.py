@@ -351,12 +351,11 @@ elif app_mode == "📝 全科考场编排":
                 student_info = {
                     '准考证号': str(row.get('准考证号', '')), '姓名': str(row.get('姓名', '')),
                     '行政班': str(row.get('行政班', '')),
-                    # 如果原考场/座位没有填写，默认为 "00"
                     '原考场': str(row.get('考场', '')).zfill(2) if str(row.get('考场', '')) else "00",
                     '原座位': str(row.get('座位号', '')).zfill(2) if str(row.get('座位号', '')) else "00"
                 }
                 
-                # 1. 提取固定考场科目 (语文、数学、以及语种比如英语)
+                # 1. 提取固定考场科目
                 fixed_subs = ['语文', '数学']
                 lang = str(row.get('语种', '')).strip()
                 if lang and lang != 'nan':
@@ -366,7 +365,7 @@ elif app_mode == "📝 全科考场编排":
                     if sub not in self.fixed_subjects: self.fixed_subjects[sub] = []
                     self.fixed_subjects[sub].append(student_info)
                 
-                # 2. 提取动态考场科目 (科类、选考1、选考2)
+                # 2. 提取动态考场科目
                 for col in ['科类', '选考1', '选考2']:
                     sub = str(row.get(col, '')).strip()
                     if sub and sub != 'nan':
@@ -382,7 +381,7 @@ elif app_mode == "📝 全科考场编排":
                     student_slips[zkz] = {'姓名': name, '行政班': cls, '准考证号': zkz, 'exams': []}
                 student_slips[zkz]['exams'].append({'科目': subject, '考场': room_name, '座位': seat_name})
 
-            # 步骤A：排主科 (直接沿用原考场原座位)
+            # 步骤A：排主科
             for subject, students in self.fixed_subjects.items():
                 arranged_list = []
                 for stu in students:
@@ -393,7 +392,7 @@ elif app_mode == "📝 全科考场编排":
                 df = pd.DataFrame(arranged_list).sort_values(by=['考场号', '座位号'])
                 exam_results[subject] = df
 
-            # 步骤B：排选考科 (蛇形打散重排)
+            # 步骤B：排选考科
             for subject, students in self.dynamic_subjects.items():
                 students_sorted = sorted(students, key=lambda x: (x['原考场'], x['原座位']))
                 arranged_list = []
@@ -405,7 +404,6 @@ elif app_mode == "📝 全科考场编排":
                 df = pd.DataFrame(arranged_list).sort_values(by=['考场号', '座位号'])
                 exam_results[subject] = df
                 
-            # 将字典转为导出用的列表格式
             slip_export_data = []
             for zkz, info in student_slips.items():
                 row = {'准考证号': zkz, '姓名': info['姓名'], '行政班': info['行政班']}
@@ -471,8 +469,9 @@ elif app_mode == "📝 全科考场编排":
         with col2:
             components.html("""<button onclick="window.parent.print()" style="padding: 8px 15px; background-color: #FF4B4B; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; font-weight: bold;">🖨️ 打印全校考生小票 (A4纸)</button>""", height=50)
 
+        # 【就在这里修复了错别字！！！】将 "信息条" 改为了 "准考条"
         view_mode = st.radio("👀 切换查看模式：", ["🎫 考生个人全科准考条", "📋 各科目考场门贴大表"], horizontal=True)
-        if "信息条" in view_mode:
+        if "准考条" in view_mode:
             st.markdown(render_student_slips(slips), unsafe_allow_html=True)
         else:
             tabs = st.tabs(subjects)
