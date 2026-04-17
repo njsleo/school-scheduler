@@ -23,7 +23,7 @@ if 'slip_export_data' not in st.session_state: st.session_state['slip_export_dat
 st.sidebar.title("🛠️ 英华教务工作台")
 app_mode = st.sidebar.radio(
     "请选择功能模块：",
-    ["📅 智能排课系统", "📝 选考考场编排"]
+    ["📅 智能排课系统", "📝 全科考场编排"]
 )
 st.sidebar.markdown("---")
 
@@ -300,10 +300,10 @@ if app_mode == "📅 智能排课系统":
         teacher_df = all_sheets[list(all_sheets.keys())[0]] if len(all_sheets) == 1 else [df for df in all_sheets.values() if len(df) > 5 and len(df.columns) >= 3][0]
 
         if st.button("🚀 开始生成教务课表", type="primary"):
-            with st.spinner("正在执行超启发式算法排课，寻找完美解..."):
+            with st.spinner("正在执行算法排课，寻找完美解..."):
                 scheduler = CourseScheduler(teacher_df, class_prefix, class_suffix, include_sunday_evening)
                 result, total_tasks = scheduler.run()
-                if total_tasks == 0: st.error("❌ 解析失败，请检查 Excel 表头是否包含'教师','班级','科目','课时'等字眼。")
+                if total_tasks == 0: st.error("❌ 解析失败，请检查 Excel 表头。")
                 else:
                     st.session_state['schedule_result'] = result
                     st.session_state['schedule_classes'] = scheduler.classes
@@ -330,52 +330,82 @@ if app_mode == "📅 智能排课系统":
 
 
 # =====================================================================
-#                          模块二：智能考场编排
+#                          模块二：全科考场编排
 # =====================================================================
-elif app_mode == "📝 选考考场编排":
+elif app_mode == "📝 全科考场编排":
     with st.sidebar:
         st.header("⚙️ 考务参数设置")
         room_capacity = st.number_input("标准考场容量 (人数)", min_value=10, max_value=60, value=30, step=1)
-        st.caption("💡 说明：系统仅对选考科目进行重新排场。将沿用主考场序列打散防作弊，并生成可打印的考生信息条。")
+        st.caption("💡 说明：主科(语数外)将自动沿用原考场座位，选考科目进行蛇形打散重排。最后生成包含所有科目的准考条。")
 
     # --- 1. 排考核心类 ---
     class ExamScheduler:
         def __init__(self, student_df, capacity):
             self.student_data = student_df.fillna("")
             self.capacity = int(capacity)
-            self.subject_students = {} 
+            self.fixed_subjects = {}   # 主科池 (固定考场)
+            self.dynamic_subjects = {} # 选考科池 (动态重排)
 
         def parse_data(self):
             for _, row in self.student_data.iterrows():
                 student_info = {
                     '准考证号': str(row.get('准考证号', '')), '姓名': str(row.get('姓名', '')),
                     '行政班': str(row.get('行政班', '')),
-                    '原考场': str(row.get('考场', '')).zfill(2), '原座位': str(row.get('座位号', '')).zfill(2)
+                    # 如果原考场/座位没有填写，默认为 "00"
+                    '原考场': str(row.get('考场', '')).zfill(2) if str(row.get('考场', '')) else "00",
+                    '原座位': str(row.get('座位号', '')).zfill(2) if str(row.get('座位号', '')) else "00"
                 }
+                
+                # 1. 提取固定考场科目 (语文、数学、以及语种比如英语)
+                fixed_subs = ['语文', '数学']
+                lang = str(row.get('语种', '')).strip()
+                if lang and lang != 'nan':
+                    fixed_subs.append(lang)
+                    
+                for sub in fixed_subs:
+                    if sub not in self.fixed_subjects: self.fixed_subjects[sub] = []
+                    self.fixed_subjects[sub].append(student_info)
+                
+                # 2. 提取动态考场科目 (科类、选考1、选考2)
                 for col in ['科类', '选考1', '选考2']:
                     sub = str(row.get(col, '')).strip()
                     if sub and sub != 'nan':
-                        if sub not in self.subject_students: self.subject_students[sub] = []
-                        self.subject_students[sub].append(student_info)
+                        if sub not in self.dynamic_subjects: self.dynamic_subjects[sub] = []
+                        self.dynamic_subjects[sub].append(student_info)
 
         def arrange(self):
             self.parse_data()
             exam_results, student_slips = {}, {}
-            for subject, students in self.subject_students.items():
+
+            def add_to_slip(zkz, name, cls, subject, room_name, seat_name):
+                if zkz not in student_slips:
+                    student_slips[zkz] = {'姓名': name, '行政班': cls, '准考证号': zkz, 'exams': []}
+                student_slips[zkz]['exams'].append({'科目': subject, '考场': room_name, '座位': seat_name})
+
+            # 步骤A：排主科 (直接沿用原考场原座位)
+            for subject, students in self.fixed_subjects.items():
+                arranged_list = []
+                for stu in students:
+                    room_name = f"第{stu['原考场']}考场" if stu['原考场'] != "00" else "未分配考场"
+                    seat_name = stu['原座位']
+                    arranged_list.append({'考场号': room_name, '座位号': seat_name, '准考证号': stu['准考证号'], '姓名': stu['姓名'], '行政班': stu['行政班']})
+                    add_to_slip(stu['准考证号'], stu['姓名'], stu['行政班'], subject, room_name, seat_name)
+                df = pd.DataFrame(arranged_list).sort_values(by=['考场号', '座位号'])
+                exam_results[subject] = df
+
+            # 步骤B：排选考科 (蛇形打散重排)
+            for subject, students in self.dynamic_subjects.items():
                 students_sorted = sorted(students, key=lambda x: (x['原考场'], x['原座位']))
                 arranged_list = []
                 for i, stu in enumerate(students_sorted):
                     room_idx, seat_idx = (i // self.capacity) + 1, (i % self.capacity) + 1
                     room_name, seat_name = f"第{room_idx:02d}考场", f"{seat_idx:02d}"
                     arranged_list.append({'考场号': room_name, '座位号': seat_name, '准考证号': stu['准考证号'], '姓名': stu['姓名'], '行政班': stu['行政班']})
-                    
-                    zkz = stu['准考证号']
-                    if zkz not in student_slips: student_slips[zkz] = {'姓名': stu['姓名'], '行政班': stu['行政班'], '准考证号': zkz, 'exams': []}
-                    student_slips[zkz]['exams'].append({'科目': subject, '考场': room_name, '座位': seat_name})
-                
+                    add_to_slip(stu['准考证号'], stu['姓名'], stu['行政班'], subject, room_name, seat_name)
                 df = pd.DataFrame(arranged_list).sort_values(by=['考场号', '座位号'])
                 exam_results[subject] = df
                 
+            # 将字典转为导出用的列表格式
             slip_export_data = []
             for zkz, info in student_slips.items():
                 row = {'准考证号': zkz, '姓名': info['姓名'], '行政班': info['行政班']}
@@ -390,12 +420,12 @@ elif app_mode == "📝 选考考场编排":
         for zkz, info in slips_dict.items():
             html += f"""
             <div style="border: 2px dashed #555; padding: 15px; width: 280px; background: #fff; page-break-inside: avoid; margin-bottom: 10px;">
-                <h4 style="text-align: center; margin: 0 0 10px 0; color: #d9534f; font-size: 18px;">英华学校 · 选考准考条</h4>
+                <h4 style="text-align: center; margin: 0 0 10px 0; color: #d9534f; font-size: 18px;">英华学校 · 全科准考条</h4>
                 <div style="font-size: 14px; line-height: 1.8; border-bottom: 1px solid #ccc; padding-bottom: 8px; margin-bottom: 8px;">
                     <b>姓名：</b>{info['姓名']} &nbsp;&nbsp;&nbsp; <b>班级：</b>{info['行政班']}<br><b>准考证：</b>{info['准考证号']}
                 </div>
                 <table border="1" style="width: 100%; text-align: center; border-collapse: collapse; font-size: 14px; border-color: #333;">
-                    <tr style="background-color: #f0f0f0;"><th style="padding: 4px;">科目</th><th style="padding: 4px;">物理考场</th><th style="padding: 4px;">座位号</th></tr>
+                    <tr style="background-color: #f0f0f0;"><th style="padding: 4px;">科目</th><th style="padding: 4px;">考场号</th><th style="padding: 4px;">座位号</th></tr>
             """
             for ex in info['exams']: html += f"<tr><td style='padding: 4px;'>{ex['科目']}</td><td style='padding: 4px; font-weight:bold;'>{ex['考场']}</td><td style='padding: 4px;'>{ex['座位']}</td></tr>"
             html += "</table></div>"
@@ -405,20 +435,20 @@ elif app_mode == "📝 选考考场编排":
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             for subject, df in results_dict.items(): df.to_excel(writer, sheet_name=f"{subject}考场", index=False)
-            pd.DataFrame(slip_export_data).to_excel(writer, sheet_name="学生个人考场信息条", index=False)
+            pd.DataFrame(slip_export_data).to_excel(writer, sheet_name="学生全科考场汇总", index=False)
         return output.getvalue()
 
     # --- 3. 排考 UI ---
-    st.title("📝 选考考场编排与信息条分发")
-    st.markdown("上传包含学生主科考场及选考科目的数据，系统将执行：剔除公共科、主科蛇形防作弊延展排位、生成千人千面准考条。")
+    st.title("📝 全科考场编排与准考证生成")
+    st.markdown("上传包含学生主科考场及选考科目的数据，系统将执行：语数外沿用原考场、选科蛇形防作弊延展排位、生成包含所有科目的千人千面准考条。")
     uploaded_exam = st.file_uploader("📂 请上传【考生信息】 Excel/CSV", type=['xlsx', 'xls', 'csv'], key="exam_upload")
 
     if uploaded_exam:
         student_df = pd.read_csv(uploaded_exam, dtype=str) if uploaded_exam.name.endswith('.csv') else pd.read_excel(uploaded_exam, dtype=str)
         st.success(f"✅ 成功读取 {len(student_df)} 名考生数据！")
         
-        if st.button("🚀 生成选考考场及考生信息条", type="primary"):
-            with st.spinner("正在沿用主考场序列进行防作弊编排..."):
+        if st.button("🚀 生成全科考场及考生信息条", type="primary"):
+            with st.spinner("正在整合主科考场，并对选考科目进行蛇形编排..."):
                 scheduler = ExamScheduler(student_df, room_capacity)
                 results, slips, slip_export = scheduler.arrange()
                 if not results: st.error("❌ 数据解析失败，请检查表格。")
@@ -433,15 +463,15 @@ elif app_mode == "📝 选考考场编排":
         col1, col2 = st.columns([1, 3])
         with col1:
             st.download_button(
-                label="📊 导出考务总表 (Excel)",
+                label="📊 导出全科考务总表 (Excel)",
                 data=export_exam_to_excel(results, slip_export),
-                file_name="英华学校_选考考场汇总.xlsx",
+                file_name="英华学校_期末全科考场汇总.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         with col2:
             components.html("""<button onclick="window.parent.print()" style="padding: 8px 15px; background-color: #FF4B4B; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; font-weight: bold;">🖨️ 打印全校考生小票 (A4纸)</button>""", height=50)
 
-        view_mode = st.radio("👀 切换查看模式：", ["🎫 考生个人信息条预览", "📋 各科目考场门贴大表"], horizontal=True)
+        view_mode = st.radio("👀 切换查看模式：", ["🎫 考生个人全科准考条", "📋 各科目考场门贴大表"], horizontal=True)
         if "信息条" in view_mode:
             st.markdown(render_student_slips(slips), unsafe_allow_html=True)
         else:
