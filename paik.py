@@ -10,30 +10,26 @@ from docx import Document
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_ALIGN_VERTICAL
-from docx.oxml.ns import qn
+from docx.oxml.ns import qn, nsdecls
+from docx.oxml import parse_xml
 
-# ================= 全局页面设置 =================
+# ================= 页面全局设置 =================
 st.set_page_config(page_title="英华学校教务综合平台", layout="wide", page_icon="🏫")
 
-# ================= 初始化系统缓存记忆 =================
-# 排课系统缓存
+# 初始化缓存
 if 'schedule_result' not in st.session_state: st.session_state['schedule_result'] = None
 if 'schedule_classes' not in st.session_state: st.session_state['schedule_classes'] = None
-# 排考系统缓存
 if 'exam_result' not in st.session_state: st.session_state['exam_result'] = None
 if 'exam_slips' not in st.session_state: st.session_state['exam_slips'] = None
 if 'slip_export_data' not in st.session_state: st.session_state['slip_export_data'] = None
 
-# ================= 侧边栏：系统导航大厅 =================
+# ================= 侧边栏导航 =================
 st.sidebar.title("🛠️ 英华教务工作台")
-app_mode = st.sidebar.radio(
-    "请选择功能模块：",
-    ["📅 智能排课系统", "📝 全科考场编排"]
-)
+app_mode = st.sidebar.radio("请选择功能模块：", ["📅 智能排课系统", "📝 全科考场编排"])
 st.sidebar.markdown("---")
 
 # =====================================================================
-#                          模块一：智能排课系统
+#                          功能模块：排课系统
 # =====================================================================
 if app_mode == "📅 智能排课系统":
     # --- 1. 排课专属配置 & 变量 ---
@@ -57,7 +53,6 @@ if app_mode == "📅 智能排课系统":
         class_suffix = st.text_input("班级后缀", value="班")
         include_sunday_evening = st.checkbox("✅ 开启周日晚修 (高三模式)", value=True)
 
-    # --- 2. 排课核心类 ---
     class CourseScheduler:
         def __init__(self, teacher_df, prefix, suffix, include_sunday):
             self.teacher_data = teacher_df.fillna("") 
@@ -242,7 +237,6 @@ if app_mode == "📅 智能排课系统":
 
             return self.schedules, len(self.original_tasks) + len(self.original_zouban)
 
-    # --- 3. 排课视图渲染 & 导出 ---
     def render_class_table(class_name, schedule):
         html = f"""
         <div id="table-{class_name}" style="font-family: 'SimSun', '宋体', sans-serif; max-width: 1050px; margin: auto; background-color: white; padding: 20px;">
@@ -295,9 +289,7 @@ if app_mode == "📅 智能排课系统":
                 pd.DataFrame(data, columns=['时间段'] + DAYS).to_excel(writer, sheet_name=c_name, index=False)
         return output.getvalue()
 
-    # --- 4. 排课 UI ---
     st.title("📅 全校智能排课系统")
-    st.markdown("上传教师授课安排表，系统将自动执行：防疲劳上限检测、走班对齐、晚修正课化等核心排课运算。")
     uploaded_course = st.file_uploader("📂 请上传【排课数据】 Excel", type=['xlsx', 'xls'], key="course_upload")
 
     if uploaded_course:
@@ -314,7 +306,7 @@ if app_mode == "📅 智能排课系统":
                     st.session_state['schedule_classes'] = scheduler.classes
 
     if st.session_state['schedule_result'] is not None:
-        st.success("✅ 完美排课成功！请在下方查看结果并导出。")
+        st.success("✅ 完美排课成功！")
         result, classes = st.session_state['schedule_result'], st.session_state['schedule_classes']
         
         col1, col2 = st.columns([1, 3])
@@ -333,9 +325,8 @@ if app_mode == "📅 智能排课系统":
             with tabs[idx]:
                 st.markdown(render_class_table(c_name, result[c_name]), unsafe_allow_html=True)
 
-
 # =====================================================================
-#                          模块二：全科考场编排
+#                          功能模块：全科考场编排
 # =====================================================================
 elif app_mode == "📝 全科考场编排":
     with st.sidebar:
@@ -343,9 +334,8 @@ elif app_mode == "📝 全科考场编排":
         room_capacity = st.number_input("标准考场容量 (人数)", min_value=10, max_value=60, value=30, step=1)
         st.markdown("---")
         st.header("🖨️ 打印排版设置")
-        slips_per_page = st.selectbox("每页打印学生数 (Word导出)", [4, 6, 8], index=1, help="推荐选 6 人，排版最紧凑且节省纸张")
+        slips_per_page = st.selectbox("每页打印学生数 (Word导出)", [4, 6, 8], index=1, help="推荐选 6 人，排版紧凑且自带边框裁切线")
 
-    # --- 1. 排考核心逻辑 ---
     class ExamScheduler:
         def __init__(self, student_df, capacity):
             self.student_data = student_df.fillna("")
@@ -414,11 +404,11 @@ elif app_mode == "📝 全科考场编排":
                 slip_export_data.append(row)
             return exam_results, student_slips, slip_export_data
 
-    # --- 2. Word 栅格化导出逻辑 ---
+    # --- 2. Word 栅格化导出逻辑 (核心渲染对齐版) ---
     def export_slips_to_word(slips_dict, per_page):
         doc = Document()
         
-        # 设置窄边距，榨干 A4 纸空间
+        # 设置窄边距
         section = doc.sections[0]
         section.top_margin = Inches(0.4)
         section.bottom_margin = Inches(0.4)
@@ -437,9 +427,10 @@ elif app_mode == "📝 全科考场编排":
         
         for i in range(0, len(student_list), per_page):
             grid_table = doc.add_table(rows=num_rows, cols=num_cols)
+            grid_table.style = 'Table Grid' # <--- 添加外边框，作为完美的裁切线
             grid_table.autofit = False
             
-            # 设置固定的行高，防止撑破跨页
+            # 固定行高
             row_height = 10.0 / num_rows 
             for row in grid_table.rows:
                 row.height = Inches(row_height)
@@ -450,41 +441,45 @@ elif app_mode == "📝 全科考场编排":
                 cell = grid_table.cell(r, c)
                 cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
                 
-                # 构建单个学生信息块
+                # 标题
                 p = cell.paragraphs[0]
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                set_font(p.add_run("英华学校 · 选考准考条"), 13, True)
+                set_font(p.add_run("英华学校选考条"), 14, True)
                 
+                # 基本信息
                 p2 = cell.add_paragraph()
                 p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                set_font(p2.add_run(f"姓名：{info['姓名']}  班级：{info['行政班']}"), 10)
+                set_font(p2.add_run(f"姓名：{info['姓名']}   班级：{info['行政班']}"), 11)
                 
                 p3 = cell.add_paragraph()
                 p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                set_font(p3.add_run(f"考号：{info['准考证号']}"), 10)
+                set_font(p3.add_run(f"考号：{info['准考证号']}"), 11)
+                p3.paragraph_format.space_after = Pt(6) # 增加与表格的间隙
 
-                # 内嵌科目明细表
+                # 内嵌考试信息表格
                 inner_table = cell.add_table(rows=1, cols=3)
                 inner_table.style = 'Table Grid'
                 inner_table.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 
-                # 控制列宽，让表格整齐
-                inner_table.columns[0].width = Inches(0.8)
-                inner_table.columns[1].width = Inches(1.1)
-                inner_table.columns[2].width = Inches(0.6)
+                inner_table.columns[0].width = Inches(0.9)
+                inner_table.columns[1].width = Inches(1.2)
+                inner_table.columns[2].width = Inches(0.7)
 
                 hdr_cells = inner_table.rows[0].cells
                 for j, txt in enumerate(['科目', '考场', '座号']):
                     cp = hdr_cells[j].paragraphs[0]
                     cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    set_font(cp.add_run(txt), 9, True)
+                    set_font(cp.add_run(txt), 10, True)
+                    # 为表头注入浅灰色背景，对齐网页UI效果
+                    shading_elm = parse_xml(r'<w:shd {} w:fill="F0F0F0"/>'.format(nsdecls('w')))
+                    hdr_cells[j]._tc.get_or_add_tcPr().append(shading_elm)
 
                 for ex in info['exams']:
                     row_cells = inner_table.add_row().cells
                     for j, val in enumerate([ex['科目'], ex['考场'], ex['座位']]):
                         cp = row_cells[j].paragraphs[0]
                         cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        set_font(cp.add_run(val), 9)
+                        set_font(cp.add_run(val), 10)
 
             if i + per_page < len(student_list):
                 doc.add_page_break()
@@ -498,28 +493,25 @@ elif app_mode == "📝 全科考场编排":
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             for subject, df in results_dict.items(): df.to_excel(writer, sheet_name=f"{subject}考场", index=False)
-            pd.DataFrame(slip_export_data).to_excel(writer, sheet_name="学生全科考场汇总", index=False)
+            pd.DataFrame(slip_export_data).to_excel(writer, sheet_name="学生全科汇总", index=False)
         return output.getvalue()
 
     # --- 3. 排考 UI ---
     st.title("📝 全科考场编排与 Word 准考条生成")
-    st.markdown("上传包含学生主科考场及选考科目的数据，系统将执行：语数外沿用原考场、选科蛇形防作弊延展排位、生成可直接打印的精美 Word 准考条。")
-    uploaded_exam = st.file_uploader("📂 请上传【考生信息】 Excel/CSV", type=['xlsx', 'xls', 'csv'], key="exam_upload")
+    uploaded_exam = st.file_uploader("📂 上传【考生信息表】", type=['xlsx', 'xls', 'csv'], key="exam_upload")
 
     if uploaded_exam:
         student_df = pd.read_csv(uploaded_exam, dtype=str) if uploaded_exam.name.endswith('.csv') else pd.read_excel(uploaded_exam, dtype=str)
-        st.success(f"✅ 成功读取 {len(student_df)} 名考生数据！")
         
         if st.button("🚀 生成全科考场数据", type="primary"):
-            with st.spinner("正在整合主科考场，并对选考科目进行蛇形编排..."):
+            with st.spinner("正在进行排位计算..."):
                 scheduler = ExamScheduler(student_df, room_capacity)
                 results, slips, slip_export = scheduler.arrange()
-                if not results: st.error("❌ 数据解析失败，请检查表格。")
-                else:
-                    st.session_state['exam_result'], st.session_state['exam_slips'], st.session_state['slip_export_data'] = results, slips, slip_export
+                st.session_state['exam_result'], st.session_state['exam_slips'], st.session_state['slip_export_data'] = results, slips, slip_export
 
     if st.session_state['exam_result'] is not None:
-        results, slips, slip_export = st.session_state['exam_result'], st.session_state['exam_slips'], st.session_state['slip_export_data']
+        results = st.session_state['exam_result']
+        slips = st.session_state['exam_slips']
         subjects = list(results.keys())
         st.success("✅ 考场编排完毕！")
         
@@ -527,28 +519,27 @@ elif app_mode == "📝 全科考场编排":
         col1, col2 = st.columns([1, 1])
         with col1:
             st.download_button(
-                label="📊 导出全科考务总表 (Excel)",
-                data=export_exam_to_excel(results, slip_export),
-                file_name="英华学校_期末全科考场汇总.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                label="📊 导出全科考务大表 (Excel)",
+                data=export_exam_to_excel(results, st.session_state['slip_export_data']),
+                file_name="英华学校_期末全科考场汇总.xlsx"
             )
         with col2:
             word_file = export_slips_to_word(slips, slips_per_page)
             st.download_button(
-                label=f"📄 导出考生信息条 (Word {slips_per_page}人/页)",
+                label=f"📄 导出考生小票 (Word版 · 自带裁切线)",
                 data=word_file,
-                file_name=f"英华个人考场条_{slips_per_page}人排版.docx",
+                file_name=f"英华个人考场条_{slips_per_page}人版.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             )
 
-        view_mode = st.radio("👀 切换查看模式：", ["🎫 考生个人全科准考条", "📋 各科目考场门贴大表"], horizontal=True)
-        if "准考条" in view_mode:
+        view_mode = st.radio("👀 切换查看模式：", ["🎫 考生小票排版预览", "📋 各科目考场门贴大表"], horizontal=True)
+        if "预览" in view_mode:
             def render_html(slips_dict):
                 html = '<div style="font-family:SimSun; display:flex; flex-wrap:wrap; justify-content:center; gap:20px;">'
                 for zkz, info in slips_dict.items():
                     html += f'<div style="border:1px dashed #666; padding:10px; width:280px; margin-bottom:10px;">'
-                    html += f'<h5 style="text-align:center; margin:0 0 8px 0;">英华学校选考条</h5>'
-                    html += f'<p style="font-size:12px; margin:0 0 8px 0; line-height: 1.5;">姓名：{info["姓名"]} &nbsp; 班级：{info["行政班"]}<br>考号：{info["准考证号"]}</p>'
+                    html += f'<h5 style="text-align:center; margin:0 0 8px 0; font-size:16px;">英华学校选考条</h5>'
+                    html += f'<p style="font-size:13px; text-align:center; margin:0 0 8px 0; line-height: 1.5;">姓名：{info["姓名"]} &nbsp;&nbsp; 班级：{info["行政班"]}<br>考号：{info["准考证号"]}</p>'
                     html += '<table border="1" style="width:100%; font-size:12px; border-collapse:collapse; text-align:center; border-color:#333;">'
                     html += '<tr style="background-color:#f0f0f0;"><th>科目</th><th>考场</th><th>座号</th></tr>'
                     for ex in info['exams']: html += f"<tr><td>{ex['科目']}</td><td>{ex['考场']}</td><td>{ex['座位']}</td></tr>"
@@ -559,5 +550,4 @@ elif app_mode == "📝 全科考场编排":
             tabs = st.tabs(subjects)
             for idx, subject in enumerate(subjects):
                 with tabs[idx]:
-                    st.info(f"📍 **{subject}** 共需安排 **{results[subject]['考场号'].nunique()}** 个考场。")
-                    st.dataframe(results[subject], use_container_width=True, height=500, hide_index=True)
+                    st.dataframe(results[subject], use_container_width=True, hide_index=True)
