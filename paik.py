@@ -170,9 +170,12 @@ elif app_mode == "📝 全科考场编排":
         section = doc.sections[0]
         section.top_margin, section.bottom_margin, section.left_margin, section.right_margin = Inches(0.25), Inches(0.25), Inches(0.35), Inches(0.35)
 
-        def set_font(run, name, size, bold=False, color=None):
-            run.font.name = name; run.font.size = Pt(size); run.bold = bold
-            run._element.rPr.rFonts.set(qn('w:eastAsia'), name)
+        # 🚨 终极修复：严格要求输入具体的字体名称 (font_name)，防止数字传入崩溃 🚨
+        def set_font(run, font_name, size, bold=False, color=None):
+            run.font.name = font_name
+            run.font.size = Pt(size)
+            run.bold = bold
+            run._element.rPr.rFonts.set(qn('w:eastAsia'), font_name)
             if color: run.font.color.rgb = RGBColor(*color)
 
         student_list = list(slips_dict.values())
@@ -199,7 +202,8 @@ elif app_mode == "📝 全科考场编排":
                 run_t = p.add_run(f"{exam_title}准考证"); set_font(run_t, '黑体', 14, True)
                 
                 p2 = cell.add_paragraph(); p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                set_font(p2.add_run(f"姓名：{info['姓名']}  班级：{info['行政班']}  考号：{info['准考证号']}"), 10, True)
+                # ✅ 修复点：强制指定宋体
+                set_font(p2.add_run(f"姓名：{info['姓名']}  班级：{info['行政班']}  考号：{info['准考证号']}"), '宋体', 10, True)
                 
                 inner = cell.add_table(rows=1, cols=4); inner.style = 'Table Grid'; inner.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 widths = [Inches(0.55), Inches(1.2), Inches(1.1), Inches(0.45)] 
@@ -208,7 +212,8 @@ elif app_mode == "📝 全科考场编排":
                 hdr = inner.rows[0].cells
                 for j, txt in enumerate(['科目', '考试时间', '考场名称', '座号']):
                     cp = hdr[j].paragraphs[0]; cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    set_font(cp.add_run(txt), 8, True)
+                    # ✅ 修复点：强制指定黑体表头
+                    set_font(cp.add_run(txt), '黑体', 8, True)
                     shd = parse_xml(r'<w:shd {} w:fill="F2F2F2"/>'.format(nsdecls('w'))); hdr[j]._tc.get_or_add_tcPr().append(shd)
 
                 for ex in sorted(info['exams'], key=get_exam_sort_key):
@@ -217,14 +222,15 @@ elif app_mode == "📝 全科考场编排":
                     vals = [ex['科目'], fmt_time, ex['考场'], ex['座位']]
                     for j, v in enumerate(vals):
                         cp = row_c[j].paragraphs[0]; cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        set_font(cp.add_run(v), 8, (j == 2)) 
+                        # ✅ 修复点：强制指定宋体表格内容
+                        set_font(cp.add_run(v), '宋体', 8, (j == 2)) 
 
             if i + per_page < len(student_list): doc.add_page_break()
 
         buf = io.BytesIO(); doc.save(buf); buf.seek(0)
         return buf
 
-    st.title("📝 全科考场编排 (教务无错终极版)")
+    st.title("📝 全科考场编排 (彻底修复版)")
     up_exam = st.file_uploader("📂 第一步：上传【考生信息表】", type=['xlsx', 'xls', 'csv'])
 
     if up_exam:
@@ -265,13 +271,13 @@ elif app_mode == "📝 全科考场编排":
             final_time_map = {row['科目']: row['考试时间'] for row in time_data}
 
         if st.button("🚀 第三步：生成准考证与考场表", type="primary"):
-            with st.spinner("正在安全排位..."):
+            with st.spinner("正在安全排位并生成 Word 文档..."):
                 sch = ExamScheduler(df_stu, room_capacity, final_time_map)
                 res, slips, export = sch.arrange()
                 st.session_state['exam_result'], st.session_state['exam_slips'], st.session_state['slip_export_data'] = res, slips, export
 
     if st.session_state['exam_result'] is not None:
-        st.success("✅ 完美处理完毕！顺位对齐，0 报错生成！")
+        st.success("✅ 完美处理完毕！顺位对齐，无任何报错！")
         col1, col2 = st.columns(2)
         with col1:
             output_ex = io.BytesIO()
