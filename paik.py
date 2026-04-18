@@ -24,14 +24,30 @@ if 'exam_slips' not in st.session_state: st.session_state['exam_slips'] = None
 if 'slip_export_data' not in st.session_state: st.session_state['slip_export_data'] = None
 
 # ================= 核心工具函数 =================
-# 1. 真正的智能时间排序算法（提取数字对比，绝对准确）
-def get_exam_sort_key(ex):
-    nums = re.findall(r'\d+', str(ex.get('时间', '')))
-    return tuple(int(n) for n in nums) if nums else (9999,)
 
-# 2. 智能换行排版（将日期和具体时间拆成两行展示，大幅节省横向空间）
+# 1. 绝对强硬的时间排序引擎 (只抓取开考时间，附加标准学科排序)
+def get_exam_sort_key(ex):
+    time_str = str(ex.get('时间', '')).strip()
+    
+    # 建立标准的教务学科兜底排序
+    sub_order = {"语文": 1, "数学": 2, "英语": 3, "物理": 4, "历史": 5, "化学": 6, "生物": 7, "政治": 8, "地理": 9}
+    sub_priority = sub_order.get(str(ex.get('科目', '')).strip(), 99)
+
+    # 如果没有时间，直接扔到最后，按学科顺序排
+    if not time_str or "待定" in time_str:
+        return (9999, 9999, 9999, 9999, sub_priority)
+        
+    # 提取所有数字，但只取前4个（即：月、日、时、分），彻底抛弃结束时间的干扰
+    nums = [int(n) for n in re.findall(r'\d+', time_str)]
+    while len(nums) < 4: 
+        nums.append(0) # 补齐格式防错
+    
+    return tuple(nums[:4] + [sub_priority])
+
+# 2. 智能换行排版 (将日期和时间劈成两行)
 def format_time_display(time_str, is_html=False):
     br = '<br>' if is_html else '\n'
+    time_str = str(time_str).strip()
     if ' ' in time_str:
         return time_str.replace(' ', br, 1)
     for kw in ['日', '号']:
@@ -59,7 +75,8 @@ st.sidebar.markdown("---")
 # =====================================================================
 if app_mode == "📅 智能排课系统":
     st.title("📅 全校智能排课系统")
-    st.info("排课系统运行中...（此处保留原有排课功能即可）")
+    st.info("排课系统运行中... (暂未上传排课数据)")
+    # （此部分为你原有的排课逻辑，为了突出考务更新，此处作简略展示，你可以保留你之前的排课代码）
 
 # =====================================================================
 #                          模块二：全科考场编排
@@ -108,6 +125,7 @@ elif app_mode == "📝 全科考场编排":
                 time_val = self.time_map.get(subject, "时间待定")
                 student_slips[zkz]['exams'].append({'科目': subject, '时间': time_val, '考场': room_name, '座位': seat_name})
 
+            # 1. 固定主科排场
             for subject, students in self.fixed_subjects.items():
                 data_list = []
                 for stu in students:
@@ -115,7 +133,8 @@ elif app_mode == "📝 全科考场编排":
                     add_to_slip(stu['准考证号'], stu['姓名'], stu['行政班'], subject, room_name, stu['原座位'])
                     data_list.append({'考场号': room_name, '座位号': stu['原座位'], '准考证号': stu['准考证号'], '姓名': stu['姓名'], '行政班': stu['行政班']})
                 exam_results[subject] = pd.DataFrame(data_list).sort_values(by=['考场号', '座位号'])
-
+                
+            # 2. 动态选考排场
             for subject, students in self.dynamic_subjects.items():
                 students_sorted = sorted(students, key=lambda x: (x['原考场'], x['原座位']))
                 data_list = []
@@ -126,10 +145,10 @@ elif app_mode == "📝 全科考场编排":
                     data_list.append({'考场号': room_name, '座位号': seat_name, '准考证号': stu['准考证号'], '姓名': stu['姓名'], '行政班': stu['行政班']})
                 exam_results[subject] = pd.DataFrame(data_list).sort_values(by=['考场号', '座位号'])
             
+            # 3. 整理个人导出数据，应用绝对排序引擎
             slip_export_data = []
             for zkz, info in student_slips.items():
                 row = {'准考证号': zkz, '姓名': info['姓名'], '行政班': info['行政班']}
-                # 将科目依据真实时间排序导出
                 sorted_exams = sorted(info['exams'], key=get_exam_sort_key)
                 for idx, ex in enumerate(sorted_exams):
                     row[f'科目{idx+1}'] = ex['科目']; row[f'时间{idx+1}'] = ex['时间']
@@ -137,7 +156,7 @@ elif app_mode == "📝 全科考场编排":
                 slip_export_data.append(row)
             return exam_results, student_slips, slip_export_data
 
-    # --- 渲染与导出逻辑 (加入折行排版) ---
+    # --- 渲染与导出逻辑 ---
     def export_slips_to_word(slips_dict, per_page, exam_title):
         doc = Document()
         section = doc.sections[0]
@@ -166,20 +185,19 @@ elif app_mode == "📝 全科考场编排":
             for idx, info in enumerate(chunk):
                 cell = grid_table.cell(idx // num_cols, idx % num_cols)
                 cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+                
                 # 头部
                 p = cell.paragraphs[0]; p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 run_s = p.add_run("🏫 英华学校\n"); set_font(run_s, '微软雅黑', 9, color=(120, 120, 120))
                 run_t = p.add_run(f"{exam_title}准考证"); set_font(run_t, '黑体', 14, True)
-                p.paragraph_format.space_after = Pt(2)
                 
                 # 信息
                 p2 = cell.add_paragraph(); p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                p2.paragraph_format.space_after = Pt(2)
                 set_font(p2.add_run(f"姓名：{info['姓名']}  班级：{info['行政班']}  考号：{info['准考证号']}"), 10, True)
                 
-                # 表格排版调整
+                # 表格 (4列精准调整)
                 inner = cell.add_table(rows=1, cols=4); inner.style = 'Table Grid'; inner.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                widths = [Inches(0.6), Inches(1.15), Inches(1.2), Inches(0.45)] # 更科学的列宽分配
+                widths = [Inches(0.55), Inches(1.2), Inches(1.1), Inches(0.45)] 
                 for c_idx, w in enumerate(widths): inner.columns[c_idx].width = w
 
                 hdr = inner.rows[0].cells
@@ -188,29 +206,29 @@ elif app_mode == "📝 全科考场编排":
                     set_font(cp.add_run(txt), 8, True)
                     shd = parse_xml(r'<w:shd {} w:fill="F2F2F2"/>'.format(nsdecls('w'))); hdr[j]._tc.get_or_add_tcPr().append(shd)
 
-                # 按时间自动完美排序
+                # 应用绝对排序，并智能折行
                 for ex in sorted(info['exams'], key=get_exam_sort_key):
                     row_c = inner.add_row().cells
-                    # 触发折行黑科技
                     fmt_time = format_time_display(ex['时间'], is_html=False)
                     vals = [ex['科目'], fmt_time, ex['考场'], ex['座位']]
                     for j, v in enumerate(vals):
                         cp = row_c[j].paragraphs[0]; cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        set_font(cp.add_run(v), 8, (j == 2))
+                        set_font(cp.add_run(v), 8, (j == 2)) # 考场加粗
 
             if i + per_page < len(student_list): doc.add_page_break()
 
         buf = io.BytesIO(); doc.save(buf); buf.seek(0)
         return buf
 
-    st.title("📝 全科考场编排 (含时间排序引擎)")
+    st.title("📝 全科考场编排 (含防错时间引擎)")
     up_exam = st.file_uploader("📂 第一步：上传【考生信息表】", type=['xlsx', 'xls', 'csv'])
 
     if up_exam:
         df_stu = pd.read_csv(up_exam, dtype=str) if up_exam.name.endswith('.csv') else pd.read_excel(up_exam, dtype=str)
         st.success(f"✅ 成功读取 {len(df_stu)} 名考生")
 
-        st.markdown("### 📅 第二步：填写考试时间 (自动同步准考证)")
+        st.markdown("### 📅 第二步：填写考试时间")
+        st.info("💡 提示：只需填写开考时间即可，系统将自动进行绝对排序。如果没有填写时间，该科目将自动垫底。")
         all_subs = set(['语文', '数学'])
         lang = df_stu['语种'].unique().tolist() if '语种' in df_stu.columns else []
         sel1 = df_stu['选考1'].unique().tolist() if '选考1' in df_stu.columns else []
@@ -221,13 +239,13 @@ elif app_mode == "📝 全科考场编排":
         
         time_data = []
         for s in sorted(list(all_subs)):
-            time_data.append({"科目": s, "考试时间": DEFAULT_EXAM_TIMES.get(s, "请填写时间")})
+            time_data.append({"科目": s, "考试时间": DEFAULT_EXAM_TIMES.get(s, "时间待定")})
         
         edited_time_df = st.data_editor(pd.DataFrame(time_data), use_container_width=True, hide_index=True)
         final_time_map = dict(zip(edited_time_df['科目'], edited_time_df['考试时间']))
 
         if st.button("🚀 第三步：生成准考证与考场表", type="primary"):
-            with st.spinner("正在启动时间引擎，排布最优打印方案..."):
+            with st.spinner("正在启动绝对时间引擎，进行完美排序与排布..."):
                 sch = ExamScheduler(df_stu, room_capacity, final_time_map)
                 res, slips, export = sch.arrange()
                 st.session_state['exam_result'], st.session_state['exam_slips'], st.session_state['slip_export_data'] = res, slips, export
