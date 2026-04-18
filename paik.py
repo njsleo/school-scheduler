@@ -26,7 +26,7 @@ if 'slip_export_data' not in st.session_state: st.session_state['slip_export_dat
 
 # ================= 核心工具函数 =================
 
-# 🚨 【核心修正1】：囊括所有小语种，严格新高考学科顺位！
+# 严格新高考学科顺位，囊括所有小语种
 EDITOR_ORDER = [
     "语文", "数学", "物理", "历史", 
     "英语", "外语", "日语", "俄语", "西班牙语", "法语", "德语", 
@@ -38,7 +38,7 @@ def get_exam_sort_key(ex):
     try:
         return EDITOR_ORDER.index(sub)
     except ValueError:
-        return 999  # 不认识的科目老老实实垫底
+        return 999  
 
 def format_time_display(time_str, is_html=False):
     br = '<br>' if is_html else '\n'
@@ -51,7 +51,7 @@ def format_time_display(time_str, is_html=False):
             return f"{parts[0]}{kw}{br}{parts[1]}"
     return time_str
 
-# 🚨 【核心修正2】：时间轴完全对齐 22-24日，小语种时间同步并发！
+# 时间轴完全对齐 22-24日，小语种时间同步并发
 DEFAULT_EXAM_TIMES = {
     "语文": "4月22日 09:00-11:30", 
     "数学": "4月22日 15:00-17:00",
@@ -132,15 +132,20 @@ elif app_mode == "📝 全科考场编排":
                 time_val = self.time_map.get(subject, "时间待定")
                 student_slips[zkz]['exams'].append({'科目': subject, '时间': time_val, '考场': room_name, '座位': seat_name})
 
+            # 🚨 终极防空报错防弹机制 🚨
             for subject, students in self.fixed_subjects.items():
+                if not students: continue # 遇到空数据直接跳过，绝不报错
                 data_list = []
                 for stu in students:
                     room_name = f"第{stu['原考场']}考场" if stu['原考场'] != "00" else "未分配"
                     add_to_slip(stu['准考证号'], stu['姓名'], stu['行政班'], subject, room_name, stu['原座位'])
                     data_list.append({'考场号': room_name, '座位号': stu['原座位'], '准考证号': stu['准考证号'], '姓名': stu['姓名'], '行政班': stu['行政班']})
-                exam_results[subject] = pd.DataFrame(data_list).sort_values(by=['考场号', '座位号'])
+                if data_list:
+                    # 强制写入列名，根绝 KeyError
+                    exam_results[subject] = pd.DataFrame(data_list, columns=['考场号', '座位号', '准考证号', '姓名', '行政班']).sort_values(by=['考场号', '座位号'])
                 
             for subject, students in self.dynamic_subjects.items():
+                if not students: continue 
                 students_sorted = sorted(students, key=lambda x: (x['原考场'], x['原座位']))
                 data_list = []
                 for i, stu in enumerate(students_sorted):
@@ -148,7 +153,8 @@ elif app_mode == "📝 全科考场编排":
                     room_name, seat_name = f"第{rn:02d}考场", f"{sn:02d}"
                     add_to_slip(stu['准考证号'], stu['姓名'], stu['行政班'], subject, room_name, seat_name)
                     data_list.append({'考场号': room_name, '座位号': seat_name, '准考证号': stu['准考证号'], '姓名': stu['姓名'], '行政班': stu['行政班']})
-                exam_results[subject] = pd.DataFrame(data_list).sort_values(by=['考场号', '座位号'])
+                if data_list:
+                    exam_results[subject] = pd.DataFrame(data_list, columns=['考场号', '座位号', '准考证号', '姓名', '行政班']).sort_values(by=['考场号', '座位号'])
             
             slip_export_data = []
             for zkz, info in student_slips.items():
@@ -219,7 +225,7 @@ elif app_mode == "📝 全科考场编排":
         buf = io.BytesIO(); doc.save(buf); buf.seek(0)
         return buf
 
-    st.title("📝 全科考场编排 (统考修正版)")
+    st.title("📝 全科考场编排 (教务无错终极版)")
     up_exam = st.file_uploader("📂 第一步：上传【考生信息表】", type=['xlsx', 'xls', 'csv'])
 
     if up_exam:
@@ -227,9 +233,8 @@ elif app_mode == "📝 全科考场编排":
         st.success(f"✅ 成功读取 {len(df_stu)} 名考生")
 
         st.markdown("### 📅 第二步：确认考试时间")
-        st.info("🔒 提示：表格已按【22-24日新高考统考真实顺序】锁定，并全面兼容小语种。")
+        st.info("🔒 提示：已做绝密防空报错处理。并已自动适配小语种等科目。")
         
-        # 🚨 【核心修正3】：极其严密的科目提取机制，防止任何NaN导致崩溃
         all_subs = set(['语文', '数学'])
         for col in ['语种', '选考1', '选考2', '科类']:
             if col in df_stu.columns:
@@ -242,7 +247,6 @@ elif app_mode == "📝 全科考场编排":
         for s in sorted(list(all_subs), key=lambda x: EDITOR_ORDER.index(x) if x in EDITOR_ORDER else 999):
             time_data.append({"科目": s, "考试时间": DEFAULT_EXAM_TIMES.get(s, "时间待定")})
         
-        # 🚨 【核心修正4】：动态生成防撞 Key，每次传新表强制刷新缓存，彻底告别报错
         dynamic_key = "exam_time_editor_" + hashlib.md5("".join(sorted(list(all_subs))).encode()).hexdigest()[:8]
         
         edited_time_df = st.data_editor(
@@ -250,7 +254,7 @@ elif app_mode == "📝 全科考场编排":
             use_container_width=True, 
             hide_index=True,
             column_config={
-                "科目": st.column_config.TextColumn("考试科目 (按真实考试顺序锁定)", disabled=True),
+                "科目": st.column_config.TextColumn("考试科目 (已锁定防误触)", disabled=True),
                 "考试时间": st.column_config.TextColumn("考试时间 (点击可修改)")
             },
             key=dynamic_key 
@@ -262,13 +266,13 @@ elif app_mode == "📝 全科考场编排":
             final_time_map = {row['科目']: row['考试时间'] for row in time_data}
 
         if st.button("🚀 第三步：生成准考证与考场表", type="primary"):
-            with st.spinner("正在按统考时序进行排位..."):
+            with st.spinner("正在安全排位..."):
                 sch = ExamScheduler(df_stu, room_capacity, final_time_map)
                 res, slips, export = sch.arrange()
                 st.session_state['exam_result'], st.session_state['exam_slips'], st.session_state['slip_export_data'] = res, slips, export
 
     if st.session_state['exam_result'] is not None:
-        st.success("✅ 完美处理完毕！顺位与新高考考表完全对齐，绝无报错！")
+        st.success("✅ 完美处理完毕！顺位对齐，0 报错生成！")
         col1, col2 = st.columns(2)
         with col1:
             output_ex = io.BytesIO()
