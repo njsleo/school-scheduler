@@ -25,19 +25,22 @@ if 'slip_export_data' not in st.session_state: st.session_state['slip_export_dat
 
 # ================= 核心工具函数 =================
 
-# 1. 绝对强硬的时间排序引擎 (只抓取开考时间，附加标准学科排序)
+# 强制 UI 表格显示的经典教务科目顺序
+EDITOR_ORDER = ["语文", "数学", "英语", "物理", "化学", "生物", "政治", "历史", "地理"]
+
+# 1. 绝对强硬的时间排序引擎 (抓取开考时间 + 经典学科顺序兜底)
 def get_exam_sort_key(ex):
     time_str = str(ex.get('时间', '')).strip()
     
     # 建立标准的教务学科兜底排序
-    sub_order = {"语文": 1, "数学": 2, "英语": 3, "物理": 4, "历史": 5, "化学": 6, "生物": 7, "政治": 8, "地理": 9}
+    sub_order = {"语文": 1, "数学": 2, "英语": 3, "物理": 4, "化学": 5, "生物": 6, "政治": 7, "历史": 8, "地理": 9}
     sub_priority = sub_order.get(str(ex.get('科目', '')).strip(), 99)
 
-    # 如果没有时间，直接扔到最后，按学科顺序排
+    # 如果没有时间，直接扔到最后，按经典学科顺序排
     if not time_str or "待定" in time_str:
         return (9999, 9999, 9999, 9999, sub_priority)
         
-    # 提取所有数字，但只取前4个（即：月、日、时、分），彻底抛弃结束时间的干扰
+    # 提取所有数字，取前4个（即：月、日、时、分），彻底抛弃结束时间的干扰
     nums = [int(n) for n in re.findall(r'\d+', time_str)]
     while len(nums) < 4: 
         nums.append(0) # 补齐格式防错
@@ -58,11 +61,11 @@ def format_time_display(time_str, is_html=False):
 
 # 预设时间数据
 DEFAULT_EXAM_TIMES = {
-    "生物": "4月23日 08:00-09:30", "化学": "4月23日 10:30-12:00",
-    "政治": "4月23日 15:00-16:30", "地理": "4月23日 17:30-19:00",
-    "历史": "4月24日 08:00-09:30", "物理": "4月24日 10:30-12:00",
-    "数学": "4月24日 15:00-17:00", "语文": "4月25日 09:00-11:30",
-    "英语": "4月25日 15:00-17:00"
+    "语文": "4月25日 09:00-11:30", "数学": "4月24日 15:00-17:00",
+    "英语": "4月25日 15:00-17:00", "物理": "4月24日 10:30-12:00",
+    "化学": "4月23日 10:30-12:00", "生物": "4月23日 08:00-09:30", 
+    "政治": "4月23日 15:00-16:30", "历史": "4月24日 08:00-09:30",
+    "地理": "4月23日 17:30-19:00"
 }
 
 # ================= 侧边栏导航 =================
@@ -76,7 +79,7 @@ st.sidebar.markdown("---")
 if app_mode == "📅 智能排课系统":
     st.title("📅 全校智能排课系统")
     st.info("排课系统运行中... (暂未上传排课数据)")
-    # （此部分为你原有的排课逻辑，为了突出考务更新，此处作简略展示，你可以保留你之前的排课代码）
+    # （此处为你原有的排课逻辑代码保留区）
 
 # =====================================================================
 #                          模块二：全科考场编排
@@ -145,7 +148,7 @@ elif app_mode == "📝 全科考场编排":
                     data_list.append({'考场号': room_name, '座位号': seat_name, '准考证号': stu['准考证号'], '姓名': stu['姓名'], '行政班': stu['行政班']})
                 exam_results[subject] = pd.DataFrame(data_list).sort_values(by=['考场号', '座位号'])
             
-            # 3. 整理个人导出数据，应用绝对排序引擎
+            # 3. 整理个人导出数据，应用绝对排序引擎（准考证上的时间顺序依然是按时间先后）
             slip_export_data = []
             for zkz, info in student_slips.items():
                 row = {'准考证号': zkz, '姓名': info['姓名'], '行政班': info['行政班']}
@@ -186,16 +189,13 @@ elif app_mode == "📝 全科考场编排":
                 cell = grid_table.cell(idx // num_cols, idx % num_cols)
                 cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
                 
-                # 头部
                 p = cell.paragraphs[0]; p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 run_s = p.add_run("🏫 英华学校\n"); set_font(run_s, '微软雅黑', 9, color=(120, 120, 120))
                 run_t = p.add_run(f"{exam_title}准考证"); set_font(run_t, '黑体', 14, True)
                 
-                # 信息
                 p2 = cell.add_paragraph(); p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 set_font(p2.add_run(f"姓名：{info['姓名']}  班级：{info['行政班']}  考号：{info['准考证号']}"), 10, True)
                 
-                # 表格 (4列精准调整)
                 inner = cell.add_table(rows=1, cols=4); inner.style = 'Table Grid'; inner.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 widths = [Inches(0.55), Inches(1.2), Inches(1.1), Inches(0.45)] 
                 for c_idx, w in enumerate(widths): inner.columns[c_idx].width = w
@@ -206,14 +206,13 @@ elif app_mode == "📝 全科考场编排":
                     set_font(cp.add_run(txt), 8, True)
                     shd = parse_xml(r'<w:shd {} w:fill="F2F2F2"/>'.format(nsdecls('w'))); hdr[j]._tc.get_or_add_tcPr().append(shd)
 
-                # 应用绝对排序，并智能折行
                 for ex in sorted(info['exams'], key=get_exam_sort_key):
                     row_c = inner.add_row().cells
                     fmt_time = format_time_display(ex['时间'], is_html=False)
                     vals = [ex['科目'], fmt_time, ex['考场'], ex['座位']]
                     for j, v in enumerate(vals):
                         cp = row_c[j].paragraphs[0]; cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        set_font(cp.add_run(v), 8, (j == 2)) # 考场加粗
+                        set_font(cp.add_run(v), 8, (j == 2)) 
 
             if i + per_page < len(student_list): doc.add_page_break()
 
@@ -228,7 +227,7 @@ elif app_mode == "📝 全科考场编排":
         st.success(f"✅ 成功读取 {len(df_stu)} 名考生")
 
         st.markdown("### 📅 第二步：填写考试时间")
-        st.info("💡 提示：只需填写开考时间即可，系统将自动进行绝对排序。如果没有填写时间，该科目将自动垫底。")
+        st.info("💡 提示：表格已锁定为【语文、数学、英语...】的经典学科顺序，请顺次填写。")
         all_subs = set(['语文', '数学'])
         lang = df_stu['语种'].unique().tolist() if '语种' in df_stu.columns else []
         sel1 = df_stu['选考1'].unique().tolist() if '选考1' in df_stu.columns else []
@@ -238,7 +237,8 @@ elif app_mode == "📝 全科考场编排":
             if str(s) != 'nan' and str(s).strip() != '': all_subs.add(s.strip())
         
         time_data = []
-        for s in sorted(list(all_subs)):
+        # 【核心修正】：使用经典的 9 科顺序进行前端录入表排序
+        for s in sorted(list(all_subs), key=lambda x: EDITOR_ORDER.index(x) if x in EDITOR_ORDER else 999):
             time_data.append({"科目": s, "考试时间": DEFAULT_EXAM_TIMES.get(s, "时间待定")})
         
         edited_time_df = st.data_editor(pd.DataFrame(time_data), use_container_width=True, hide_index=True)
@@ -251,7 +251,7 @@ elif app_mode == "📝 全科考场编排":
                 st.session_state['exam_result'], st.session_state['exam_slips'], st.session_state['slip_export_data'] = res, slips, export
 
     if st.session_state['exam_result'] is not None:
-        st.success("✅ 完美处理完毕！顺序精准无误！")
+        st.success("✅ 完美处理完毕！顺位精准无误！")
         col1, col2 = st.columns(2)
         with col1:
             output_ex = io.BytesIO()
@@ -278,6 +278,7 @@ elif app_mode == "📝 全科考场编排":
                     <table style="width:100%; border-collapse:collapse; font-size:11px; text-align:center; border:1px solid #ddd;">
                         <tr style="background:#f2f2f2;"><th>科目</th><th>考试时间</th><th>考场</th><th>座号</th></tr>
                 """
+                # 准考证里的时间，依然老老实实按真实的考试先后时间排，方便学生看
                 for ex in sorted(info['exams'], key=get_exam_sort_key):
                     fmt_time_html = format_time_display(ex['时间'], is_html=True)
                     html += f"<tr style='border-bottom:1px solid #eee;'><td style='padding:4px;'>{ex['科目']}</td><td style='line-height:1.2; padding:3px 0;'>{fmt_time_html}</td><td style='font-weight:bold;'>{ex['考场']}</td><td>{ex['座位']}</td></tr>"
