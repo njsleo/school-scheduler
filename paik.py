@@ -9,7 +9,7 @@ import hashlib
 import streamlit.components.v1 as components
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
 from docx.enum.table import WD_ALIGN_VERTICAL, WD_ROW_HEIGHT_RULE
 from docx.oxml.ns import qn, nsdecls
 from docx.oxml import parse_xml, OxmlElement
@@ -33,10 +33,8 @@ EDITOR_ORDER = [
     "化学", "地理", "政治", "思想政治", "生物", "生物学", "技术"
 ]
 
-# 🚨 【核心修正】：智能分流池定义
-# 选考科目池（这些科目将重新打乱排考场）
+# 选考科目池（将重新打乱排考场）
 DYNAMIC_POOL = ["化学", "地理", "政治", "思想政治", "生物", "生物学", "技术"]
-# 除了上述池子里的，其余（语数外物史）全部默认沿用固定考场
 
 def get_exam_sort_key(ex):
     sub = str(ex.get('科目', '')).strip()
@@ -99,7 +97,7 @@ elif app_mode == "📝 全科考场编排":
         enable_balance = st.checkbox("✅ 开启选考科目考场人数均衡\n(防止尾考场人数过少)", value=True)
         st.markdown("---")
         st.header("🖨️ 打印排版设置")
-        exam_name = st.text_input("考试名称 (如：一模/月考)", value="期末统考")
+        exam_name = st.text_input("考试名称 (如：一模/月考)", value="二模考试")
         slips_per_page = st.selectbox("每页打印学生数", [4, 6, 8], index=1)
 
     class ExamScheduler:
@@ -119,7 +117,6 @@ elif app_mode == "📝 全科考场编排":
                     '原座位': str(row.get('座位号', '')).zfill(2) if str(row.get('座位号', '')) else "00"
                 }
                 
-                # 提取该学生的所有科目
                 subs_for_student = ['语文', '数学']
                 for col in ['语种', '科类', '选考1', '选考2']:
                     if col in self.student_data.columns:
@@ -127,14 +124,11 @@ elif app_mode == "📝 全科考场编排":
                         if sub and sub != 'nan':
                             subs_for_student.append(sub)
                 
-                # 🚨 智能分流：将科目送入不同的排考引擎
-                for sub in set(subs_for_student): # 用set去重防错
+                for sub in set(subs_for_student): 
                     if sub in DYNAMIC_POOL:
-                        # 进入重新排考池
                         if sub not in self.dynamic_subjects: self.dynamic_subjects[sub] = []
                         self.dynamic_subjects[sub].append(student_info)
                     else:
-                        # 进入原考场固定池（语、数、外、物、史等）
                         if sub not in self.fixed_subjects: self.fixed_subjects[sub] = []
                         self.fixed_subjects[sub].append(student_info)
 
@@ -146,7 +140,6 @@ elif app_mode == "📝 全科考场编排":
                 time_val = self.time_map.get(subject, "时间待定")
                 student_slips[zkz]['exams'].append({'科目': subject, '时间': time_val, '考场': room_name, '座位': seat_name})
 
-            # ================= 1. 主科引擎：沿用原考场 =================
             for subject, students in self.fixed_subjects.items():
                 if not students: continue 
                 data_list = []
@@ -157,7 +150,6 @@ elif app_mode == "📝 全科考场编排":
                 if data_list:
                     exam_results[subject] = pd.DataFrame(data_list, columns=['考场号', '座位号', '准考证号', '姓名', '行政班']).sort_values(by=['考场号', '座位号'])
                 
-            # ================= 2. 选考引擎：打乱重排并均衡人数 =================
             for subject, students in self.dynamic_subjects.items():
                 if not students: continue 
                 students_sorted = sorted(students, key=lambda x: (x['原考场'], x['原座位']))
@@ -198,7 +190,6 @@ elif app_mode == "📝 全科考场编排":
                 if data_list:
                     exam_results[subject] = pd.DataFrame(data_list, columns=['考场号', '座位号', '准考证号', '姓名', '行政班']).sort_values(by=['考场号', '座位号'])
             
-            # ================= 3. 汇总数据 =================
             slip_export_data = []
             for zkz, info in student_slips.items():
                 row = {'准考证号': zkz, '姓名': info['姓名'], '行政班': info['行政班']}
@@ -240,30 +231,52 @@ elif app_mode == "📝 全科考场编排":
                 cell = grid_table.cell(idx // num_cols, idx % num_cols)
                 cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
                 
-                p = cell.paragraphs[0]; p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                run_s = p.add_run("🏫 英华学校\n"); set_font(run_s, '微软雅黑', 9, color=(120, 120, 120))
-                run_t = p.add_run(f"{exam_title}准考证"); set_font(run_t, '黑体', 14, True)
+                # ✅ 修复1：利用制表符实现“左侧小字校名”+“居中大字标题”在同一行
+                p = cell.paragraphs[0]
+                p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                p.paragraph_format.space_after = Pt(4)
                 
-                p2 = cell.add_paragraph(); p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                set_font(p2.add_run(f"姓名：{info['姓名']}  班级：{info['行政班']}  考号：{info['准考证号']}"), '宋体', 10, True)
+                # 设定中央制表符锚点（实现标题绝对居中）
+                tab_stops = p.paragraph_format.tab_stops
+                tab_stops.add_tab_stop(Inches(1.95), WD_TAB_ALIGNMENT.CENTER)
                 
-                inner = cell.add_table(rows=1, cols=4); inner.style = 'Table Grid'; inner.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                widths = [Inches(0.55), Inches(1.2), Inches(1.1), Inches(0.45)] 
+                run_s = p.add_run("🏫 英华学校\t")
+                set_font(run_s, '微软雅黑', 9, color=(100, 100, 100))
+                
+                run_t = p.add_run(f"{exam_title}准考证")
+                set_font(run_t, '黑体', 15, True)
+                
+                p2 = cell.add_paragraph()
+                p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                p2.paragraph_format.space_after = Pt(6)
+                set_font(p2.add_run(f"姓名：{info['姓名']}  班级：{info['行政班']}  考号：{info['准考证号']}"), '宋体', 11, True)
+                
+                inner = cell.add_table(rows=1, cols=4)
+                inner.style = 'Table Grid'
+                inner.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                widths = [Inches(0.55), Inches(1.25), Inches(1.05), Inches(0.45)] 
                 for c_idx, w in enumerate(widths): inner.columns[c_idx].width = w
 
                 hdr = inner.rows[0].cells
                 for j, txt in enumerate(['科目', '考试时间', '考场名称', '座号']):
-                    cp = hdr[j].paragraphs[0]; cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    set_font(cp.add_run(txt), '黑体', 8, True)
-                    shd = parse_xml(r'<w:shd {} w:fill="F2F2F2"/>'.format(nsdecls('w'))); hdr[j]._tc.get_or_add_tcPr().append(shd)
+                    hdr[j].vertical_alignment = WD_ALIGN_VERTICAL.CENTER # ✅ 修复2：表头单元格上下绝对居中
+                    cp = hdr[j].paragraphs[0]
+                    cp.alignment = WD_ALIGN_PARAGRAPH.CENTER             # 表头单元格左右绝对居中
+                    set_font(cp.add_run(txt), '黑体', 9, True)
+                    shd = parse_xml(r'<w:shd {} w:fill="F2F2F2"/>'.format(nsdecls('w')))
+                    hdr[j]._tc.get_or_add_tcPr().append(shd)
 
                 for ex in sorted(info['exams'], key=get_exam_sort_key):
                     row_c = inner.add_row().cells
                     fmt_time = format_time_display(ex['时间'], is_html=False)
                     vals = [ex['科目'], fmt_time, ex['考场'], ex['座位']]
                     for j, v in enumerate(vals):
-                        cp = row_c[j].paragraphs[0]; cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        set_font(cp.add_run(v), '宋体', 8, (j == 2)) 
+                        row_c[j].vertical_alignment = WD_ALIGN_VERTICAL.CENTER # ✅ 修复2：数据单元格上下绝对居中
+                        cp = row_c[j].paragraphs[0]
+                        cp.alignment = WD_ALIGN_PARAGRAPH.CENTER               # 数据单元格左右绝对居中
+                        cp.paragraph_format.space_before = Pt(2)
+                        cp.paragraph_format.space_after = Pt(2)
+                        set_font(cp.add_run(v), '宋体', 9, (j == 2)) 
 
             if i + per_page < len(student_list): doc.add_page_break()
 
@@ -333,22 +346,29 @@ elif app_mode == "📝 全科考场编排":
 
         view = st.radio("👀 预览模式", ["🎫 准考条 UI 预览", "📋 各科目考场门贴"], horizontal=True)
         if "预览" in view:
+            # 网页版同步跟进排版：学校左上角，文字绝对居中
             html = '<div style="display:flex; flex-wrap:wrap; justify-content:center; gap:15px; padding:10px; background:#f0f2f6;">'
             for zkz, info in list(st.session_state['exam_slips'].items())[:20]: 
                 html += f"""
-                <div style="width:340px; border:1px dashed #999; border-radius:8px; background:#fff; padding:10px; margin-bottom:10px;">
-                    <div style="text-align:center; border-bottom:1px solid #eee; padding-bottom:5px; margin-bottom:5px;">
-                        <span style="font-size:10px; color:#888;">🏫 英华学校</span><br><b style="font-size:16px;">{exam_name}准考证</b>
+                <div style="width:340px; border:1px dashed #999; border-radius:8px; background:#fff; padding:12px; margin-bottom:10px;">
+                    <div style="border-bottom:1px solid #eee; padding-bottom:6px; margin-bottom:10px; position:relative; text-align:center;">
+                        <span style="font-size:10px; color:#888; position:absolute; left:0; bottom:3px;">🏫 英华学校</span>
+                        <b style="font-size:17px; letter-spacing:1px;">{exam_name}准考证</b>
                     </div>
-                    <div style="font-size:12px; margin-bottom:8px; text-align:center;">
-                        <b>{info['姓名']}</b> | {info['行政班']} | <span style="color:#d35400;">{info['准考证号']}</span>
+                    <div style="font-size:12px; margin-bottom:10px; text-align:center;">
+                        <b>姓名：{info['姓名']}</b> &nbsp; 班级：{info['行政班']} &nbsp; <span style="color:#d35400;">考号：{info['准考证号']}</span>
                     </div>
                     <table style="width:100%; border-collapse:collapse; font-size:11px; text-align:center; border:1px solid #ddd;">
-                        <tr style="background:#f2f2f2;"><th>科目</th><th>考试时间</th><th>考场</th><th>座号</th></tr>
+                        <tr style="background:#f2f2f2;">
+                            <th style="padding:6px; vertical-align:middle;">科目</th>
+                            <th style="padding:6px; vertical-align:middle;">考试时间</th>
+                            <th style="padding:6px; vertical-align:middle;">考场名称</th>
+                            <th style="padding:6px; vertical-align:middle;">座号</th>
+                        </tr>
                 """
                 for ex in sorted(info['exams'], key=get_exam_sort_key):
                     fmt_time_html = format_time_display(ex['时间'], is_html=True)
-                    html += f"<tr style='border-bottom:1px solid #eee;'><td style='padding:4px;'>{ex['科目']}</td><td style='line-height:1.2; padding:3px 0;'>{fmt_time_html}</td><td style='font-weight:bold;'>{ex['考场']}</td><td>{ex['座位']}</td></tr>"
+                    html += f"<tr style='border-bottom:1px solid #eee;'><td style='padding:5px; vertical-align:middle;'>{ex['科目']}</td><td style='line-height:1.3; padding:5px 0; vertical-align:middle;'>{fmt_time_html}</td><td style='font-weight:bold; vertical-align:middle;'>{ex['考场']}</td><td style='vertical-align:middle;'>{ex['座位']}</td></tr>"
                 html += "</table></div>"
             st.markdown(html + '</div>', unsafe_allow_html=True)
             if len(st.session_state['exam_slips']) > 20: st.warning("💡 网页仅显示前 20 位考生进行预览，下载 Word 查看全校数据。")
