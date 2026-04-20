@@ -33,6 +33,11 @@ EDITOR_ORDER = [
     "化学", "地理", "政治", "思想政治", "生物", "生物学", "技术"
 ]
 
+# 🚨 【核心修正】：智能分流池定义
+# 选考科目池（这些科目将重新打乱排考场）
+DYNAMIC_POOL = ["化学", "地理", "政治", "思想政治", "生物", "生物学", "技术"]
+# 除了上述池子里的，其余（语数外物史）全部默认沿用固定考场
+
 def get_exam_sort_key(ex):
     sub = str(ex.get('科目', '')).strip()
     try:
@@ -90,17 +95,19 @@ if app_mode == "📅 智能排课系统":
 elif app_mode == "📝 全科考场编排":
     with st.sidebar:
         st.header("⚙️ 考务参数设置")
-        room_capacity = st.number_input("标准考场容量 (人数)", min_value=10, max_value=60, value=30)
+        room_capacity = st.number_input("选考标准考场容量 (人数)", min_value=10, max_value=60, value=30)
+        enable_balance = st.checkbox("✅ 开启选考科目考场人数均衡\n(防止尾考场人数过少)", value=True)
         st.markdown("---")
         st.header("🖨️ 打印排版设置")
         exam_name = st.text_input("考试名称 (如：一模/月考)", value="期末统考")
         slips_per_page = st.selectbox("每页打印学生数", [4, 6, 8], index=1)
 
     class ExamScheduler:
-        def __init__(self, student_df, capacity, time_map):
+        def __init__(self, student_df, capacity, time_map, balance):
             self.student_data = student_df.fillna("")
             self.capacity = int(capacity)
             self.time_map = time_map
+            self.balance = balance  
             self.fixed_subjects, self.dynamic_subjects = {}, {}
 
         def parse_data(self):
@@ -111,17 +118,25 @@ elif app_mode == "📝 全科考场编排":
                     '原考场': str(row.get('考场', '')).zfill(2) if str(row.get('考场', '')) else "00",
                     '原座位': str(row.get('座位号', '')).zfill(2) if str(row.get('座位号', '')) else "00"
                 }
-                fixed_subs = ['语文', '数学']
-                lang = str(row.get('语种', '')).strip()
-                if lang and lang != 'nan': fixed_subs.append(lang)
-                for sub in fixed_subs:
-                    if sub not in self.fixed_subjects: self.fixed_subjects[sub] = []
-                    self.fixed_subjects[sub].append(student_info)
-                for col in ['科类', '选考1', '选考2']:
-                    sub = str(row.get(col, '')).strip()
-                    if sub and sub != 'nan':
+                
+                # 提取该学生的所有科目
+                subs_for_student = ['语文', '数学']
+                for col in ['语种', '科类', '选考1', '选考2']:
+                    if col in self.student_data.columns:
+                        sub = str(row.get(col, '')).strip()
+                        if sub and sub != 'nan':
+                            subs_for_student.append(sub)
+                
+                # 🚨 智能分流：将科目送入不同的排考引擎
+                for sub in set(subs_for_student): # 用set去重防错
+                    if sub in DYNAMIC_POOL:
+                        # 进入重新排考池
                         if sub not in self.dynamic_subjects: self.dynamic_subjects[sub] = []
                         self.dynamic_subjects[sub].append(student_info)
+                    else:
+                        # 进入原考场固定池（语、数、外、物、史等）
+                        if sub not in self.fixed_subjects: self.fixed_subjects[sub] = []
+                        self.fixed_subjects[sub].append(student_info)
 
         def arrange(self):
             self.parse_data()
@@ -131,30 +146,59 @@ elif app_mode == "📝 全科考场编排":
                 time_val = self.time_map.get(subject, "时间待定")
                 student_slips[zkz]['exams'].append({'科目': subject, '时间': time_val, '考场': room_name, '座位': seat_name})
 
-            # 🚨 终极防空报错防弹机制 🚨
+            # ================= 1. 主科引擎：沿用原考场 =================
             for subject, students in self.fixed_subjects.items():
-                if not students: continue # 遇到空数据直接跳过，绝不报错
+                if not students: continue 
                 data_list = []
                 for stu in students:
                     room_name = f"第{stu['原考场']}考场" if stu['原考场'] != "00" else "未分配"
                     add_to_slip(stu['准考证号'], stu['姓名'], stu['行政班'], subject, room_name, stu['原座位'])
                     data_list.append({'考场号': room_name, '座位号': stu['原座位'], '准考证号': stu['准考证号'], '姓名': stu['姓名'], '行政班': stu['行政班']})
                 if data_list:
-                    # 强制写入列名，根绝 KeyError
                     exam_results[subject] = pd.DataFrame(data_list, columns=['考场号', '座位号', '准考证号', '姓名', '行政班']).sort_values(by=['考场号', '座位号'])
                 
+            # ================= 2. 选考引擎：打乱重排并均衡人数 =================
             for subject, students in self.dynamic_subjects.items():
                 if not students: continue 
                 students_sorted = sorted(students, key=lambda x: (x['原考场'], x['原座位']))
                 data_list = []
-                for i, stu in enumerate(students_sorted):
-                    rn, sn = (i // self.capacity) + 1, (i % self.capacity) + 1
-                    room_name, seat_name = f"第{rn:02d}考场", f"{sn:02d}"
+                
+                total_stu = len(students_sorted)
+                num_rooms = math.ceil(total_stu / self.capacity)
+                
+                if num_rooms > 0:
+                    if self.balance:
+                        base_cap = total_stu // num_rooms
+                        remainder = total_stu % num_rooms
+                        room_caps = [base_cap + (1 if i < remainder else 0) for i in range(num_rooms)]
+                    else:
+                        room_caps = [self.capacity for _ in range(num_rooms - 1)]
+                        last_room = total_stu % self.capacity
+                        room_caps.append(last_room if last_room != 0 else self.capacity)
+                else:
+                    room_caps = []
+
+                current_room_idx = 0
+                current_seat_idx = 0
+
+                for stu in students_sorted:
+                    if current_seat_idx >= room_caps[current_room_idx]:
+                        current_room_idx += 1
+                        current_seat_idx = 0
+
+                    rn = current_room_idx + 1
+                    sn = current_seat_idx + 1
+                    room_name = f"第{rn:02d}考场"
+                    seat_name = f"{sn:02d}"
+                    
                     add_to_slip(stu['准考证号'], stu['姓名'], stu['行政班'], subject, room_name, seat_name)
                     data_list.append({'考场号': room_name, '座位号': seat_name, '准考证号': stu['准考证号'], '姓名': stu['姓名'], '行政班': stu['行政班']})
+                    current_seat_idx += 1
+
                 if data_list:
                     exam_results[subject] = pd.DataFrame(data_list, columns=['考场号', '座位号', '准考证号', '姓名', '行政班']).sort_values(by=['考场号', '座位号'])
             
+            # ================= 3. 汇总数据 =================
             slip_export_data = []
             for zkz, info in student_slips.items():
                 row = {'准考证号': zkz, '姓名': info['姓名'], '行政班': info['行政班']}
@@ -170,7 +214,6 @@ elif app_mode == "📝 全科考场编排":
         section = doc.sections[0]
         section.top_margin, section.bottom_margin, section.left_margin, section.right_margin = Inches(0.25), Inches(0.25), Inches(0.35), Inches(0.35)
 
-        # 🚨 终极修复：严格要求输入具体的字体名称 (font_name)，防止数字传入崩溃 🚨
         def set_font(run, font_name, size, bold=False, color=None):
             run.font.name = font_name
             run.font.size = Pt(size)
@@ -202,7 +245,6 @@ elif app_mode == "📝 全科考场编排":
                 run_t = p.add_run(f"{exam_title}准考证"); set_font(run_t, '黑体', 14, True)
                 
                 p2 = cell.add_paragraph(); p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                # ✅ 修复点：强制指定宋体
                 set_font(p2.add_run(f"姓名：{info['姓名']}  班级：{info['行政班']}  考号：{info['准考证号']}"), '宋体', 10, True)
                 
                 inner = cell.add_table(rows=1, cols=4); inner.style = 'Table Grid'; inner.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -212,7 +254,6 @@ elif app_mode == "📝 全科考场编排":
                 hdr = inner.rows[0].cells
                 for j, txt in enumerate(['科目', '考试时间', '考场名称', '座号']):
                     cp = hdr[j].paragraphs[0]; cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    # ✅ 修复点：强制指定黑体表头
                     set_font(cp.add_run(txt), '黑体', 8, True)
                     shd = parse_xml(r'<w:shd {} w:fill="F2F2F2"/>'.format(nsdecls('w'))); hdr[j]._tc.get_or_add_tcPr().append(shd)
 
@@ -222,7 +263,6 @@ elif app_mode == "📝 全科考场编排":
                     vals = [ex['科目'], fmt_time, ex['考场'], ex['座位']]
                     for j, v in enumerate(vals):
                         cp = row_c[j].paragraphs[0]; cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        # ✅ 修复点：强制指定宋体表格内容
                         set_font(cp.add_run(v), '宋体', 8, (j == 2)) 
 
             if i + per_page < len(student_list): doc.add_page_break()
@@ -230,7 +270,9 @@ elif app_mode == "📝 全科考场编排":
         buf = io.BytesIO(); doc.save(buf); buf.seek(0)
         return buf
 
-    st.title("📝 全科考场编排 (彻底修复版)")
+    st.title("📝 全科考场编排 (主次科智能分流版)")
+    
+    st.info("💡 **分流引擎已激活**：【语文/数学/英语/物理/历史】将自动提取原考场；【化学/生物/政治/地理】将重新分配考场并自动均衡人数。")
     up_exam = st.file_uploader("📂 第一步：上传【考生信息表】", type=['xlsx', 'xls', 'csv'])
 
     if up_exam:
@@ -238,7 +280,6 @@ elif app_mode == "📝 全科考场编排":
         st.success(f"✅ 成功读取 {len(df_stu)} 名考生")
 
         st.markdown("### 📅 第二步：确认考试时间")
-        st.info("🔒 提示：已做绝密防空报错处理。并已自动适配小语种等科目。")
         
         all_subs = set(['语文', '数学'])
         for col in ['语种', '选考1', '选考2', '科类']:
@@ -271,13 +312,13 @@ elif app_mode == "📝 全科考场编排":
             final_time_map = {row['科目']: row['考试时间'] for row in time_data}
 
         if st.button("🚀 第三步：生成准考证与考场表", type="primary"):
-            with st.spinner("正在安全排位并生成 Word 文档..."):
-                sch = ExamScheduler(df_stu, room_capacity, final_time_map)
+            with st.spinner("正在启动主次科分流引擎，安全排位中..."):
+                sch = ExamScheduler(df_stu, room_capacity, final_time_map, enable_balance)
                 res, slips, export = sch.arrange()
                 st.session_state['exam_result'], st.session_state['exam_slips'], st.session_state['slip_export_data'] = res, slips, export
 
     if st.session_state['exam_result'] is not None:
-        st.success("✅ 完美处理完毕！顺位对齐，无任何报错！")
+        st.success("✅ 完美处理完毕！语数外物史已沿用原考场，其余选考已重新均衡分配！")
         col1, col2 = st.columns(2)
         with col1:
             output_ex = io.BytesIO()
