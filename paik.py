@@ -94,7 +94,7 @@ elif app_mode == "📝 全科考场编排":
         enable_balance = st.checkbox("✅ 开启选考科目考场人数均衡\n(防止尾考场人数过少)", value=True)
         st.markdown("---")
         st.header("🖨️ 打印排版设置")
-        exam_name = st.text_input("考试名称 (如：一模/月考)", value="期末统考")
+        exam_name = st.text_input("考试名称 (如：一模/月考)", value="二模考试")
         slips_per_page = st.selectbox("每页打印学生数", [4, 6, 8], index=1)
 
     class ExamScheduler:
@@ -197,7 +197,6 @@ elif app_mode == "📝 全科考场编排":
                 slip_export_data.append(row)
             return exam_results, student_slips, slip_export_data
 
-    # ================= Word 排版导出渲染引擎 =================
     def export_slips_to_word(slips_dict, per_page, exam_title):
         doc = Document()
         section = doc.sections[0]
@@ -229,12 +228,10 @@ elif app_mode == "📝 全科考场编排":
                 cell = grid_table.cell(idx // num_cols, idx % num_cols)
                 cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
                 
-                # 🎨 升级1：利用制表符实现学校靠左、标题居中
                 p = cell.paragraphs[0]
                 p.alignment = WD_ALIGN_PARAGRAPH.LEFT
                 p.paragraph_format.space_after = Pt(8)
                 
-                # 设定中央制表符锚点（精确计算居中位置）
                 tab_stops = p.paragraph_format.tab_stops
                 tab_stops.add_tab_stop(Inches(1.75), WD_TAB_ALIGNMENT.CENTER)
                 
@@ -244,31 +241,29 @@ elif app_mode == "📝 全科考场编排":
                 run_t = p.add_run(f"{exam_title}准考证")
                 set_font(run_t, '黑体', 15, True)
                 
-                # 🎨 升级2：精细化分段样式控制（突显考号，姓名班级加粗）
+                # 🎨 修复点：缩小字号并缩短空格，强制一行显示
                 p2 = cell.add_paragraph()
                 p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 p2.paragraph_format.space_after = Pt(8)
                 
                 run_l1 = p2.add_run("姓名: ")
-                set_font(run_l1, '宋体', 10, False)
-                run_v1 = p2.add_run(f"{info['姓名']}  ")
-                set_font(run_v1, '黑体', 11, True)
+                set_font(run_l1, '宋体', 9, False)
+                run_v1 = p2.add_run(f"{info['姓名']} ") # 改为1个空格
+                set_font(run_v1, '黑体', 10, True)
                 
                 run_l2 = p2.add_run("班级: ")
-                set_font(run_l2, '宋体', 10, False)
-                run_v2 = p2.add_run(f"{info['行政班']}  ")
-                set_font(run_v2, '黑体', 11, True)
+                set_font(run_l2, '宋体', 9, False)
+                run_v2 = p2.add_run(f"{info['行政班']} ") # 改为1个空格
+                set_font(run_v2, '黑体', 10, True)
                 
                 run_l3 = p2.add_run("考号: ")
-                set_font(run_l3, '宋体', 10, False)
+                set_font(run_l3, '宋体', 9, False)
                 run_v3 = p2.add_run(f"{info['准考证号']}")
-                set_font(run_v3, 'Arial', 11, True, color=(200, 60, 0)) # 经典深橙色
+                set_font(run_v3, 'Arial', 10, True, color=(200, 60, 0)) # 同样缩小到10号
                 
-                # 🎨 升级3：优雅的浅灰边框与绝对居中
                 inner = cell.add_table(rows=1, cols=4)
                 inner.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 
-                # 内部表格替换为细致的浅灰色边框
                 in_tblPr = inner._tbl.tblPr
                 in_tblBorders = OxmlElement('w:tblBorders')
                 for b in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
@@ -276,22 +271,21 @@ elif app_mode == "📝 全科考场编排":
                     in_tblBorders.append(edge)
                 in_tblPr.append(in_tblBorders)
 
-                # 完美列宽比例分布
                 widths = [Inches(0.6), Inches(1.4), Inches(1.0), Inches(0.5)] 
                 for c_idx, w in enumerate(widths): inner.columns[c_idx].width = w
 
                 hdr = inner.rows[0].cells
-                inner.rows[0].height = Inches(0.28) # 扩大一点行高更舒展
+                inner.rows[0].height = Inches(0.28) 
                 inner.rows[0].height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
                 
                 for j, txt in enumerate(['科目', '考试时间', '考场名称', '座号']):
-                    hdr[j].vertical_alignment = WD_ALIGN_VERTICAL.CENTER # 上下绝对居中
+                    hdr[j].vertical_alignment = WD_ALIGN_VERTICAL.CENTER 
                     cp = hdr[j].paragraphs[0]
-                    cp.alignment = WD_ALIGN_PARAGRAPH.CENTER # 左右绝对居中
-                    cp.paragraph_format.space_before = Pt(0) # 去除段间距防干扰
+                    cp.alignment = WD_ALIGN_PARAGRAPH.CENTER 
+                    cp.paragraph_format.space_before = Pt(0) 
                     cp.paragraph_format.space_after = Pt(0)
                     set_font(cp.add_run(txt), '黑体', 9, True, color=(40, 40, 40))
-                    shd = parse_xml(r'<w:shd {} w:fill="F5F5F5"/>'.format(nsdecls('w'))) # 温和背景
+                    shd = parse_xml(r'<w:shd {} w:fill="F5F5F5"/>'.format(nsdecls('w'))) 
                     hdr[j]._tc.get_or_add_tcPr().append(shd)
 
                 for ex in sorted(info['exams'], key=get_exam_sort_key):
@@ -302,13 +296,12 @@ elif app_mode == "📝 全科考场编排":
                     fmt_time = format_time_display(ex['时间'], is_html=False)
                     vals = [ex['科目'], fmt_time, ex['考场'], ex['座位']]
                     for j, v in enumerate(vals):
-                        row_c[j].vertical_alignment = WD_ALIGN_VERTICAL.CENTER # 上下绝对居中
+                        row_c[j].vertical_alignment = WD_ALIGN_VERTICAL.CENTER 
                         cp = row_c[j].paragraphs[0]
-                        cp.alignment = WD_ALIGN_PARAGRAPH.CENTER # 左右绝对居中
+                        cp.alignment = WD_ALIGN_PARAGRAPH.CENTER 
                         cp.paragraph_format.space_before = Pt(0)
                         cp.paragraph_format.space_after = Pt(0)
                         
-                        # 按列微调：科目灰，时间灰小，考场黑粗
                         if j == 0: set_font(cp.add_run(v), '宋体', 9, color=(80, 80, 80))
                         elif j == 1: set_font(cp.add_run(v), 'Arial', 8, color=(80, 80, 80))
                         elif j == 2: set_font(cp.add_run(v), '黑体', 10, True)
@@ -390,7 +383,7 @@ elif app_mode == "📝 全科考场编排":
                         <span style="font-size:10px; color:#888; position:absolute; left:0; bottom:3px;">🏫 英华学校</span>
                         <b style="font-size:17px; letter-spacing:1px;">{exam_name}准考证</b>
                     </div>
-                    <div style="font-size:12px; margin-bottom:10px; text-align:center;">
+                    <div style="font-size:11px; margin-bottom:10px; text-align:center;">
                         姓名: <b>{info['姓名']}</b> &nbsp; 班级: <b>{info['行政班']}</b> &nbsp; 考号: <b style="color:#cc4400; font-family:Arial;">{info['准考证号']}</b>
                     </div>
                     <table style="width:100%; border-collapse:collapse; font-size:11px; text-align:center; border:1px solid #e0e0e0;">
