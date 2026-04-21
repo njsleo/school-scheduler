@@ -141,7 +141,6 @@ elif app_mode == "📝 全科考场编排":
                 time_val = self.time_map.get(subject, "时间待定")
                 student_slips[zkz]['exams'].append({'科目': subject, '时间': time_val, '考场': room_name, '座位': seat_name})
 
-            # 固定主科（沿用原考场）
             for subject, students in self.fixed_subjects.items():
                 if not students: continue 
                 data_list = []
@@ -152,7 +151,6 @@ elif app_mode == "📝 全科考场编排":
                 if data_list:
                     exam_results[subject] = pd.DataFrame(data_list, columns=['考场号', '座位号', '准考证号', '姓名', '行政班']).sort_values(by=['考场号', '座位号'])
                 
-            # 选考科目（动态智能排考，蛇形+均分）
             for subject, students in self.dynamic_subjects.items():
                 if not students: continue 
                 students_sorted = sorted(students, key=lambda x: (x['原考场'], x['原座位']))
@@ -203,7 +201,7 @@ elif app_mode == "📝 全科考场编排":
                 slip_export_data.append(row)
             return exam_results, student_slips, slip_export_data
 
-    # ================= 完美 Word 导出引擎 =================
+    # ================= 完美 Word 导出引擎 (准考证) =================
     def export_slips_to_word(slips_dict, per_page, exam_title):
         doc = Document()
         section = doc.sections[0]
@@ -217,8 +215,7 @@ elif app_mode == "📝 全科考场编排":
             run.font.size = Pt(size)
             run.bold = bold
             run._element.rPr.rFonts.set(qn('w:eastAsia'), font_name)
-            if color: 
-                run.font.color.rgb = RGBColor(*color)
+            if color: run.font.color.rgb = RGBColor(*color)
 
         student_list = list(slips_dict.values())
         num_cols, num_rows = 2, per_page // 2
@@ -243,7 +240,6 @@ elif app_mode == "📝 全科考场编排":
                 cell = grid_table.cell(idx // num_cols, idx % num_cols)
                 cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
                 
-                # 头部：学校名称居左，标题居中
                 p = cell.paragraphs[0]
                 p.alignment = WD_ALIGN_PARAGRAPH.LEFT
                 p.paragraph_format.space_after = Pt(8)
@@ -256,7 +252,6 @@ elif app_mode == "📝 全科考场编排":
                 run_t = p.add_run(f"{exam_title}准考证")
                 set_font(run_t, '黑体', 15, True)
                 
-                # 个人信息：单行精简版
                 p2 = cell.add_paragraph()
                 p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 p2.paragraph_format.space_after = Pt(8)
@@ -276,7 +271,6 @@ elif app_mode == "📝 全科考场编排":
                 run_v3 = p2.add_run(f"{info['准考证号']}")
                 set_font(run_v3, 'Arial', 10, True, color=(200, 60, 0))
                 
-                # 内部表格配置
                 inner = cell.add_table(rows=1, cols=4)
                 inner.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 
@@ -294,7 +288,6 @@ elif app_mode == "📝 全科考场编排":
                 for c_idx, w in enumerate(widths): 
                     inner.columns[c_idx].width = w
 
-                # 表头渲染
                 hdr = inner.rows[0].cells
                 inner.rows[0].height = Inches(0.28) 
                 inner.rows[0].height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
@@ -309,7 +302,6 @@ elif app_mode == "📝 全科考场编排":
                     shd = parse_xml(r'<w:shd {} w:fill="F5F5F5"/>'.format(nsdecls('w'))) 
                     hdr[j]._tc.get_or_add_tcPr().append(shd)
 
-                # 数据行渲染
                 for ex in sorted(info['exams'], key=get_exam_sort_key):
                     row_c = inner.add_row().cells
                     inner.rows[-1].height = Inches(0.28)
@@ -341,7 +333,101 @@ elif app_mode == "📝 全科考场编排":
         buf.seek(0)
         return buf
 
-    st.title("📝 全科考场编排 (教务智能终极版)")
+    # ================= 🚀 新增：各科目考场门贴渲染引擎 =================
+    def export_door_signs_to_word(exam_results, exam_title):
+        doc = Document()
+        section = doc.sections[0]
+        # 门贴采用舒展的大边距，方便往墙上或门上贴
+        section.top_margin = Inches(0.8)
+        section.bottom_margin = Inches(0.8)
+        section.left_margin = Inches(0.8)
+        section.right_margin = Inches(0.8)
+
+        def set_font(run, font_name, size, bold=False, color=None):
+            run.font.name = font_name
+            run.font.size = Pt(size)
+            run.bold = bold
+            run._element.rPr.rFonts.set(qn('w:eastAsia'), font_name)
+            if color: 
+                run.font.color.rgb = RGBColor(*color)
+
+        is_first_page = True
+
+        for sub in EDITOR_ORDER:
+            if sub not in exam_results or exam_results[sub].empty:
+                continue
+            
+            df = exam_results[sub]
+            rooms = df['考场号'].unique()
+            
+            # 按考场号自然排序
+            for room in sorted(rooms):
+                if not is_first_page:
+                    doc.add_page_break() # 保证一模一页
+                is_first_page = False
+                
+                room_df = df[df['考场号'] == room]
+                
+                # 门贴大标题 (例如: 🏫 二模考试 · 物理)
+                p_title = doc.add_paragraph()
+                p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                run_title = p_title.add_run(f"🏫 {exam_title} · {sub}")
+                set_font(run_title, '黑体', 22, bold=True)
+                
+                # 门贴副标题 (考场号)
+                p_sub = doc.add_paragraph()
+                p_sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                p_sub.paragraph_format.space_after = Pt(16)
+                run_sub = p_sub.add_run(f"【 {room} 考生名单 】")
+                set_font(run_sub, '微软雅黑', 16, bold=True)
+                
+                # 考场名单表格
+                table = doc.add_table(rows=1, cols=4)
+                table.style = 'Table Grid'
+                table.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                
+                # 设置宽阔的列宽比例，填满 A4 纸宽度
+                widths = [Inches(1.0), Inches(2.2), Inches(1.5), Inches(1.8)]
+                for c_idx, w in enumerate(widths):
+                    table.columns[c_idx].width = w
+                
+                hdr_cells = table.rows[0].cells
+                table.rows[0].height = Pt(32) # 表头高度
+                table.rows[0].height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+                
+                headers = ['座位号', '准考证号', '姓名', '行政班']
+                for j, h in enumerate(headers):
+                    hdr_cells[j].vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+                    p = hdr_cells[j].paragraphs[0]
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    set_font(p.add_run(h), '黑体', 12, bold=True)
+                    shd = parse_xml(r'<w:shd {} w:fill="F0F0F0"/>'.format(nsdecls('w')))
+                    hdr_cells[j]._tc.get_or_add_tcPr().append(shd)
+                    
+                for _, row in room_df.iterrows():
+                    row_cells = table.add_row().cells
+                    # ✅ 核心要求：行高设定为 26pt（接近 24 但留有一点呼吸感，非常舒服）
+                    table.rows[-1].height = Pt(26)
+                    table.rows[-1].height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+                    
+                    vals = [str(row['座位号']), str(row['准考证号']), str(row['姓名']), str(row['行政班'])]
+                    for j, val in enumerate(vals):
+                        row_cells[j].vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+                        p = row_cells[j].paragraphs[0]
+                        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        if j == 2: # 姓名加粗
+                            set_font(p.add_run(val), '黑体', 11, bold=True)
+                        elif j == 1: # 考号
+                            set_font(p.add_run(val), 'Arial', 11)
+                        else:
+                            set_font(p.add_run(val), '宋体', 11)
+                            
+        buf = io.BytesIO()
+        doc.save(buf)
+        buf.seek(0)
+        return buf
+
+    st.title("📝 全科考场编排 (智能统计版)")
     
     st.info("💡 **分流引擎已激活**：【语文/数学/英语/物理/历史】将自动提取原考场；【化学/生物/政治/地理】将重新分配考场并自动均衡人数。")
     up_exam = st.file_uploader("📂 第一步：上传【考生信息表】", type=['xlsx', 'xls', 'csv'])
@@ -383,7 +469,7 @@ elif app_mode == "📝 全科考场编排":
             final_time_map = {row['科目']: row['考试时间'] for row in time_data}
 
         if st.button("🚀 第三步：生成准考证与考场表", type="primary"):
-            with st.spinner("正在安全排位并生成教务数据..."):
+            with st.spinner("正在安全排位并生成考务数据..."):
                 sch = ExamScheduler(df_stu, room_capacity, final_time_map, enable_balance)
                 res, slips, export = sch.arrange()
                 st.session_state['exam_result'] = res
@@ -391,16 +477,17 @@ elif app_mode == "📝 全科考场编排":
                 st.session_state['slip_export_data'] = export
 
     if st.session_state['exam_result'] is not None:
-        st.success("✅ 完美处理完毕！Excel已新增【考场分卷清单】。")
-        col1, col2 = st.columns(2)
+        st.success("✅ 完美处理完毕！数据已全部就绪。")
+        
+        # 将操作按钮分为完整的三列，视觉更平衡
+        col1, col2, col3 = st.columns(3)
+        
         with col1:
             output_ex = io.BytesIO()
             with pd.ExcelWriter(output_ex, engine='openpyxl') as writer:
-                # 1. 各科目明细
                 for sub in sorted(list(st.session_state['exam_result'].keys()), key=lambda x: EDITOR_ORDER.index(x) if x in EDITOR_ORDER else 999):
                     st.session_state['exam_result'][sub].to_excel(writer, sheet_name=f"{sub}考场", index=False)
                 
-                # 2. 考场分卷统计 Sheet (超稳定重写版)
                 all_data_list = []
                 for sub, df in st.session_state['exam_result'].items():
                     if not df.empty:
@@ -410,31 +497,29 @@ elif app_mode == "📝 全科考场编排":
                 
                 if all_data_list:
                     full_df = pd.concat(all_data_list, ignore_index=True)
-                    # 按照 考场号 和 科目 统计人数
                     stats_df = full_df.groupby(['考场号', '科目']).size().unstack(fill_value=0)
-                    
-                    # 按照规定的考试顺序重新排列列名
                     ordered_cols = [c for c in EDITOR_ORDER if c in stats_df.columns]
                     stats_df = stats_df[ordered_cols]
-                    
-                    # 增加总计列
                     stats_df['考场总卷数'] = stats_df.sum(axis=1)
-                    
-                    # 重置索引，让“考场号”变成普通列输出到 Excel
                     stats_df.reset_index(inplace=True)
                     stats_df.to_excel(writer, sheet_name="考场分卷清单", index=False)
                 
-                # 3. 全科汇总
                 pd.DataFrame(st.session_state['slip_export_data']).to_excel(writer, sheet_name="学生个人全科汇总", index=False)
             
-            st.download_button("📊 下载考务 Excel 总表 (含分卷统计)", data=output_ex.getvalue(), file_name=f"英华_{exam_name}_考务总表.xlsx")
+            st.download_button("📊 下载 Excel 考务总表", data=output_ex.getvalue(), file_name=f"英华_{exam_name}_考务总表.xlsx", use_container_width=True)
         
         with col2:
             word_f = export_slips_to_word(st.session_state['exam_slips'], slips_per_page, exam_name)
-            st.download_button(f"📄 下载 {exam_name} 准考证 (Word)", data=word_f, file_name=f"英华_{exam_name}_准考证_{slips_per_page}人版.docx")
+            st.download_button(f"🎫 下载 准考证条 (Word)", data=word_f, file_name=f"英华_{exam_name}_准考证_{slips_per_page}人版.docx", use_container_width=True)
 
-        view = st.radio("👀 预览模式", ["🎫 准考条 UI 预览", "📋 各科目考场门贴"], horizontal=True)
-        if "预览" in view:
+        with col3:
+            # 🚀 调用最新研发的各科门贴引擎
+            door_signs_f = export_door_signs_to_word(st.session_state['exam_result'], exam_name)
+            st.download_button(f"🚪 下载 各科考场门贴 (Word)", data=door_signs_f, file_name=f"英华_{exam_name}_考场门贴.docx", type="primary", use_container_width=True)
+
+        st.markdown("---")
+        view = st.radio("👀 预览模式", ["🎫 准考条 UI 预览", "📋 各科目考场详情预览"], horizontal=True)
+        if "预览" in view and "准考条" in view:
             html = '<div style="display:flex; flex-wrap:wrap; justify-content:center; gap:15px; padding:10px; background:#f0f2f6;">'
             for zkz, info in list(st.session_state['exam_slips'].items())[:20]: 
                 html += f"""
