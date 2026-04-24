@@ -30,7 +30,7 @@ app_mode = st.sidebar.radio("请选择功能模块：", ["📅 智能排课系�
 st.sidebar.markdown("---")
 
 # =====================================================================
-#                          模块一：智能排课系统 (全量未删减)
+#                          模块一：智能排课系统 
 # =====================================================================
 if app_mode == "📅 智能排课系统":
     DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
@@ -325,7 +325,7 @@ if app_mode == "📅 智能排课系统":
 
 
 # =====================================================================
-#                          模块二：全科考场编排 (兼容多版本表头)
+#                          模块二：全科考场编排
 # =====================================================================
 elif app_mode == "📝 全科考场编排":
     
@@ -363,19 +363,22 @@ elif app_mode == "📝 全科考场编排":
 
     with st.sidebar:
         st.header("⚙️ 考务参数设置")
-        room_capacity = st.number_input("选考标准考场容量 (人数)", min_value=10, max_value=60, value=30)
+        room_capacity = st.number_input("标准考场容量 (人数)", min_value=10, max_value=60, value=30)
         enable_balance = st.checkbox("✅ 开启选考科目考场人数均衡", value=True)
+        # 🚨 终极解决方案：加入强制全科重排选项 🚨
+        force_dynamic = st.checkbox("🔄 忽略原表格座位，所有科目全部重新排位", value=False)
         st.markdown("---")
         st.header("🖨️ 打印排版设置")
         exam_name = st.text_input("考试名称", value="二模考试")
         slips_per_page = st.selectbox("每页打印学生数", [4, 6, 8], index=1)
 
     class ExamScheduler:
-        def __init__(self, student_df, capacity, time_map, balance):
+        def __init__(self, student_df, capacity, time_map, balance, force_dynamic):
             self.student_data = student_df.fillna("")
             self.capacity = int(capacity)
             self.time_map = time_map
             self.balance = balance  
+            self.force_dynamic = force_dynamic # 新增的强制开关
             self.fixed_subjects, self.dynamic_subjects = {}, {}
 
         # 智能表头匹配
@@ -409,7 +412,8 @@ elif app_mode == "📝 全科考场编排":
                         if sub and sub.lower() != 'nan': subs_for_student.append(sub)
                 
                 for sub in set(subs_for_student): 
-                    if sub in DYNAMIC_POOL:
+                    # 💡 核心修复：如果勾选了强制重排，就把所有科目都扔进动态排位池
+                    if sub in DYNAMIC_POOL or self.force_dynamic:
                         if sub not in self.dynamic_subjects: self.dynamic_subjects[sub] = []
                         self.dynamic_subjects[sub].append(student_info)
                     else:
@@ -462,6 +466,7 @@ elif app_mode == "📝 全科考场编排":
                 if data_list:
                     exam_results[subject] = pd.DataFrame(data_list, columns=['考场号', '座位号', '准考证号', '姓名', '行政班']).sort_values(by=['考场号', '座位号'])
             
+            # 导出全科汇总数据
             slip_export_data = []
             for zkz, info in student_slips.items():
                 row = {'准考证号': zkz, '姓名': info['姓名'], '行政班': info['行政班']}
@@ -472,7 +477,7 @@ elif app_mode == "📝 全科考场编排":
                 slip_export_data.append(row)
             return exam_results, student_slips, slip_export_data
 
-    # ================= 准考证 Word 排版 =================
+    # ================= Word 导出引擎 (准考证条) =================
     def export_slips_to_word(slips_dict, per_page, exam_title):
         doc = Document()
         section = doc.sections[0]
@@ -520,7 +525,8 @@ elif app_mode == "📝 全科考场编排":
                     edge = OxmlElement(f'w:{b}'); edge.set(qn('w:val'), 'single'); edge.set(qn('w:sz'), '4'); edge.set(qn('w:color'), 'E0E0E0')
                     in_tblBorders.append(edge)
                 in_tblPr.append(in_tblBorders)
-                for c_idx, w in enumerate([Inches(0.6), Inches(1.4), Inches(1.0), Inches(0.5)]): inner.columns[c_idx].width = w
+                widths = [Inches(0.6), Inches(1.4), Inches(1.0), Inches(0.5)] 
+                for c_idx, w in enumerate(widths): inner.columns[c_idx].width = w
 
                 hdr = inner.rows[0].cells; inner.rows[0].height = Inches(0.28); inner.rows[0].height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
                 for j, txt in enumerate(['科目', '考试时间', '考场名称', '座号']):
@@ -530,7 +536,8 @@ elif app_mode == "📝 全科考场编排":
 
                 for ex in sorted(info['exams'], key=get_exam_sort_key):
                     row_c = inner.add_row().cells; inner.rows[-1].height = Inches(0.28); inner.rows[-1].height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
-                    vals = [ex['科目'], format_time_display(ex['时间'], False), ex['考场'], ex['座位']]
+                    fmt_time = format_time_display(ex['时间'], is_html=False)
+                    vals = [ex['科目'], fmt_time, ex['考场'], ex['座位']]
                     for j, v in enumerate(vals):
                         row_c[j].vertical_alignment = WD_ALIGN_VERTICAL.CENTER; cp = row_c[j].paragraphs[0]; cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
                         if j == 0: set_font(cp.add_run(v), '宋体', 9, color=(80, 80, 80))
@@ -577,8 +584,8 @@ elif app_mode == "📝 全科考场编排":
         buf = io.BytesIO(); doc.save(buf); buf.seek(0)
         return buf
 
-    st.title("📝 全科考场编排 (教务兼容终极版)")
-    st.info("💡 **系统已开启智能兼容模式**：支持高一、高二、高三所有不规范的表头格式（自动识别准考证、考号、班级等）。")
+    st.title("📝 全科考场编排 (全兼容智能版)")
+    st.info("💡 **系统已自动开启兼容模式**：支持高一、高二、高三所有表头格式（模糊识别准考证、班级等）。")
     up_exam = st.file_uploader("📂 第一步：上传【考生信息表】", type=['xlsx', 'xls', 'csv'])
 
     if up_exam:
@@ -587,8 +594,9 @@ elif app_mode == "📝 全科考场编排":
 
         st.markdown("### 📅 第二步：确认考试时间")
         all_subs = set(['语文', '数学'])
+        # 兼容性科目提取
         for col in df_stu.columns:
-            if any(kw in str(col) for kw in ['语种', '选考', '科类', '科目']):
+            if any(kw in str(col) for kw in ['语种', '选考', '科类', '科目', '首选', '再选']):
                 for val in df_stu[col].dropna().unique():
                     v_str = str(val).strip()
                     if v_str and v_str.lower() != 'nan': all_subs.add(v_str)
@@ -600,7 +608,7 @@ elif app_mode == "📝 全科考场编排":
 
         if st.button("🚀 第三步：生成准考证与考场数据", type="primary"):
             with st.spinner("正在启动兼容引擎，进行智能排位..."):
-                sch = ExamScheduler(df_stu, room_capacity, final_time_map, enable_balance)
+                sch = ExamScheduler(df_stu, room_capacity, final_time_map, enable_balance, force_dynamic)
                 res, slips, export = sch.arrange()
                 st.session_state['exam_result'], st.session_state['exam_slips'], st.session_state['slip_export_data'] = res, slips, export
 
@@ -636,7 +644,7 @@ elif app_mode == "📝 全科考场编排":
             word_door = export_door_signs_to_word(st.session_state['exam_result'], exam_name)
             st.download_button("🚪 下载 考场门贴 (Word)", word_door, f"英华_{exam_name}_门贴.docx", type="primary", use_container_width=True)
 
-        tabs = st.tabs(["🎫 预览准考证", "📋 各科明细预览"])
+        tabs = st.tabs(["🎫 预览准考证", "📋 各科详情"])
         with tabs[0]:
             html = '<div style="display:flex; flex-wrap:wrap; justify-content:center; gap:15px; padding:10px; background:#f0f2f6;">'
             for zkz, info in list(st.session_state['exam_slips'].items())[:15]: 
@@ -648,7 +656,7 @@ elif app_mode == "📝 全科考场编排":
                     <table style="width:100%; border-collapse:collapse; font-size:11px; text-align:center; border:1px solid #e0e0e0;">
                         <tr style="background:#f5f5f5;"><th>科目</th><th>考试时间</th><th>考场</th><th>座号</th></tr>"""
                 for ex in sorted(info['exams'], key=get_exam_sort_key):
-                    html += f"<tr><td style='padding:5px; border:1px solid #e0e0e0; color:#555;'>{ex['科目']}</td><td style='line-height:1.2; padding:5px 0; border:1px solid #e0e0e0; color:#555;'>{format_time_display(ex['时间'], True)}</td><td style='font-weight:bold; border:1px solid #e0e0e0;'>{ex['考场']}</td><td style='border:1px solid #e0e0e0;'>{ex['座位']}</td></tr>"
+                    html += f"<tr><td style='padding:5px; border:1px solid #e0e0e0;'>{ex['科目']}</td><td style='line-height:1.2; padding:5px 0; border:1px solid #e0e0e0;'>{format_time_display(ex['时间'], True)}</td><td style='font-weight:bold; border:1px solid #e0e0e0;'>{ex['考场']}</td><td style='border:1px solid #e0e0e0;'>{ex['座位']}</td></tr>"
                 html += "</table></div>"
             st.markdown(html + '</div>', unsafe_allow_html=True)
             if len(st.session_state['exam_slips']) > 15: st.warning("💡 网页仅显示前 15 位考生进行预览，下载 Word 查看全校数据。")
