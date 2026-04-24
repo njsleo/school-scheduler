@@ -30,7 +30,7 @@ app_mode = st.sidebar.radio("请选择功能模块：", ["📅 智能排课系�
 st.sidebar.markdown("---")
 
 # =====================================================================
-#                          模块一：智能排课系统 
+#                          模块一：智能排课系统
 # =====================================================================
 if app_mode == "📅 智能排课系统":
     DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
@@ -325,7 +325,7 @@ if app_mode == "📅 智能排课系统":
 
 
 # =====================================================================
-#                          模块二：全科考场编排
+#                          模块二：全科考场编排 (智能独立排位版)
 # =====================================================================
 elif app_mode == "📝 全科考场编排":
     
@@ -362,26 +362,32 @@ elif app_mode == "📝 全科考场编排":
     }
 
     with st.sidebar:
-        st.header("⚙️ 考务参数设置")
-        room_capacity = st.number_input("标准考场容量 (人数)", min_value=10, max_value=60, value=30)
-        enable_balance = st.checkbox("✅ 开启选考科目考场人数均衡", value=True)
-        # 🚨 终极解决方案：加入强制全科重排选项 🚨
-        force_dynamic = st.checkbox("🔄 忽略原表格座位，所有科目全部重新排位", value=False)
+        st.header("⚙️ 考务分配引擎")
+        # 🚨 全新模式选择器，默认全自动排考，彻底摆脱对 Excel 原表格的依赖
+        assign_mode = st.radio(
+            "选择考场分配模式：", 
+            ["🌟 全自动排考 (无需原考场，所有科目由系统自动生成并均衡分配)", 
+             "📌 沿用原表主科考场 (要求上传的 Excel 包含考场号和座位列)"]
+        )
+        room_capacity = st.number_input("设置标准考场容量 (每班人数)", min_value=10, max_value=60, value=20)
+        enable_balance = st.checkbox("✅ 开启考场人数自动均衡\n(防止尾考场只有几个人)", value=True)
+        
         st.markdown("---")
         st.header("🖨️ 打印排版设置")
-        exam_name = st.text_input("考试名称", value="二模考试")
+        exam_name = st.text_input("考试名称", value="期中统考")
         slips_per_page = st.selectbox("每页打印学生数", [4, 6, 8], index=1)
 
     class ExamScheduler:
-        def __init__(self, student_df, capacity, time_map, balance, force_dynamic):
+        def __init__(self, student_df, capacity, time_map, balance, mode):
             self.student_data = student_df.fillna("")
             self.capacity = int(capacity)
             self.time_map = time_map
             self.balance = balance  
-            self.force_dynamic = force_dynamic # 新增的强制开关
-            self.fixed_subjects, self.dynamic_subjects = {}, {}
+            self.mode = mode
+            self.subjects_data = {}
+            self.has_room_cols = False
 
-        # 智能表头匹配
+        # 智能容错：自动找寻近似的列名
         def find_col(self, keywords):
             for col in self.student_data.columns:
                 for kw in keywords:
@@ -395,74 +401,88 @@ elif app_mode == "📝 全科考场编排":
             c_room = self.find_col(["考场"])
             c_seat = self.find_col(["座位"])
 
+            # 标记表格内是否真的有考场列
+            self.has_room_cols = bool(c_room and c_seat)
+
             for _, row in self.student_data.iterrows():
                 student_info = {
-                    '准考证号': str(row.get(c_zkz, '')), 
-                    '姓名': str(row.get(c_name, '')),
-                    '行政班': str(row.get(c_class, '')),
-                    '原考场': str(row.get(c_room, '')).zfill(2) if row.get(c_room) else "00",
-                    '原座位': str(row.get(c_seat, '')).zfill(2) if row.get(c_seat) else "00"
+                    '准考证号': str(row.get(c_zkz, '')).strip(), 
+                    '姓名': str(row.get(c_name, '')).strip(),
+                    '行政班': str(row.get(c_class, '')).strip(),
+                    '原考场': str(row.get(c_room, '')).strip().zfill(2) if c_room and row.get(c_room) else "00",
+                    '原座位': str(row.get(c_seat, '')).strip().zfill(2) if c_seat and row.get(c_seat) else "00"
                 }
                 
                 subs_for_student = ['语文', '数学']
-                for col in ['语种', '科类', '选考1', '选考2', '首选科目', '再选科目']:
-                    actual_col = self.find_col([col])
-                    if actual_col:
-                        sub = str(row.get(actual_col, '')).strip()
-                        if sub and sub.lower() != 'nan': subs_for_student.append(sub)
+                for col in self.student_data.columns:
+                    if any(kw in str(col) for kw in ['语种', '科类', '选考1', '选考2', '首选', '再选']):
+                        sub = str(row.get(col, '')).strip()
+                        if sub and sub.lower() != 'nan': 
+                            subs_for_student.append(sub)
                 
+                # 将学生塞入对应科目的花名册池子里
                 for sub in set(subs_for_student): 
-                    # 💡 核心修复：如果勾选了强制重排，就把所有科目都扔进动态排位池
-                    if sub in DYNAMIC_POOL or self.force_dynamic:
-                        if sub not in self.dynamic_subjects: self.dynamic_subjects[sub] = []
-                        self.dynamic_subjects[sub].append(student_info)
-                    else:
-                        if sub not in self.fixed_subjects: self.fixed_subjects[sub] = []
-                        self.fixed_subjects[sub].append(student_info)
+                    if sub not in self.subjects_data: 
+                        self.subjects_data[sub] = []
+                    self.subjects_data[sub].append(student_info)
 
         def arrange(self):
             self.parse_data()
             exam_results, student_slips = {}, {}
+            
             def add_to_slip(zkz, name, cls, subject, room_name, seat_name):
                 if zkz not in student_slips: 
                     student_slips[zkz] = {'姓名': name, '行政班': cls, '准考证号': zkz, 'exams': []}
                 time_val = self.time_map.get(subject, "时间待定")
                 student_slips[zkz]['exams'].append({'科目': subject, '时间': time_val, '考场': room_name, '座位': seat_name})
 
-            # 1. 固定科目排位
-            for subject, students in self.fixed_subjects.items():
+            # 核心排考分配循环
+            for subject, students in self.subjects_data.items():
                 if not students: continue 
-                data_list = []
-                for stu in students:
-                    room_name = f"第{stu['原考场']}考场" if stu['原考场'] != "00" else "未分配"
-                    add_to_slip(stu['准考证号'], stu['姓名'], stu['行政班'], subject, room_name, stu['原座位'])
-                    data_list.append({'考场号': room_name, '座位号': stu['原座位'], '准考证号': stu['准考证号'], '姓名': stu['姓名'], '行政班': stu['行政班']})
-                if data_list:
-                    exam_results[subject] = pd.DataFrame(data_list, columns=['考场号', '座位号', '准考证号', '姓名', '行政班']).sort_values(by=['考场号', '座位号'])
                 
-            # 2. 选考动态排位与均衡
-            for subject, students in self.dynamic_subjects.items():
-                if not students: continue 
-                students_sorted = sorted(students, key=lambda x: (x['原考场'], x['原座位']))
                 data_list = []
-                total_stu = len(students_sorted)
-                num_rooms = math.ceil(total_stu / self.capacity)
-                if num_rooms > 0:
-                    if self.balance:
-                        base_cap, rem = divmod(total_stu, num_rooms)
-                        room_caps = [base_cap + (1 if i < rem else 0) for i in range(num_rooms)]
-                    else:
-                        room_caps = [self.capacity for _ in range(num_rooms - 1)] + [total_stu % self.capacity or self.capacity]
-                else: room_caps = []
+                
+                # 判断：如果是沿用模式 + 表格真的有这列 + 属于传统主科，那就不重排
+                use_original = ("沿用原表" in self.mode and self.has_room_cols and subject not in DYNAMIC_POOL)
 
-                curr_r, curr_s = 0, 0
-                for stu in students_sorted:
-                    if curr_s >= room_caps[curr_r]: curr_r += 1; curr_s = 0
-                    rn, sn = curr_r + 1, curr_s + 1
-                    room_name, seat_name = f"第{rn:02d}考场", f"{sn:02d}"
-                    add_to_slip(stu['准考证号'], stu['姓名'], stu['行政班'], subject, room_name, seat_name)
-                    data_list.append({'考场号': room_name, '座位号': seat_name, '准考证号': stu['准考证号'], '姓名': stu['姓名'], '行政班': stu['行政班']})
-                    curr_s += 1
+                if use_original:
+                    # 沿用 Excel 里的原始考号
+                    students_sorted = sorted(students, key=lambda x: (x['原考场'], x['原座位']))
+                    for stu in students_sorted:
+                        room_name = f"第{stu['原考场']}考场" if stu['原考场'] != "00" else "未分配"
+                        seat_name = stu['原座位']
+                        add_to_slip(stu['准考证号'], stu['姓名'], stu['行政班'], subject, room_name, seat_name)
+                        data_list.append({'考场号': room_name, '座位号': seat_name, '准考证号': stu['准考证号'], '姓名': stu['姓名'], '行政班': stu['行政班']})
+                else:
+                    # 🌟 核心突破：全自动接管分配！
+                    # 首先按照【行政班】和【学号】排序，保证同班学生连在一起不散乱
+                    students_sorted = sorted(students, key=lambda x: (x['行政班'], x['准考证号']))
+                    
+                    total_stu = len(students_sorted)
+                    num_rooms = math.ceil(total_stu / self.capacity)
+                    
+                    if num_rooms > 0:
+                        if self.balance:
+                            base_cap, rem = divmod(total_stu, num_rooms)
+                            room_caps = [base_cap + (1 if i < rem else 0) for i in range(num_rooms)]
+                        else:
+                            room_caps = [self.capacity for _ in range(num_rooms - 1)] + [total_stu % self.capacity or self.capacity]
+                    else: 
+                        room_caps = []
+
+                    # 开始蛇形塞进考场
+                    curr_r, curr_s = 0, 0
+                    for stu in students_sorted:
+                        if curr_s >= room_caps[curr_r]: 
+                            curr_r += 1
+                            curr_s = 0
+                        rn, sn = curr_r + 1, curr_s + 1
+                        room_name, seat_name = f"第{rn:02d}考场", f"{sn:02d}"
+                        
+                        add_to_slip(stu['准考证号'], stu['姓名'], stu['行政班'], subject, room_name, seat_name)
+                        data_list.append({'考场号': room_name, '座位号': seat_name, '准考证号': stu['准考证号'], '姓名': stu['姓名'], '行政班': stu['行政班']})
+                        curr_s += 1
+                        
                 if data_list:
                     exam_results[subject] = pd.DataFrame(data_list, columns=['考场号', '座位号', '准考证号', '姓名', '行政班']).sort_values(by=['考场号', '座位号'])
             
@@ -475,6 +495,7 @@ elif app_mode == "📝 全科考场编排":
                     row[f'科目{idx+1}'] = ex['科目']; row[f'时间{idx+1}'] = ex['时间']
                     row[f'考场{idx+1}'] = ex['考场']; row[f'座位{idx+1}'] = ex['座位']
                 slip_export_data.append(row)
+                
             return exam_results, student_slips, slip_export_data
 
     # ================= Word 导出引擎 (准考证条) =================
@@ -548,7 +569,7 @@ elif app_mode == "📝 全科考场编排":
         buf = io.BytesIO(); doc.save(buf); buf.seek(0)
         return buf
 
-    # ================= 考场门贴 Word 排版 =================
+    # ================= Word 导出引擎 (考场门贴) =================
     def export_door_signs_to_word(exam_results, exam_title):
         doc = Document()
         section = doc.sections[0]
@@ -584,8 +605,8 @@ elif app_mode == "📝 全科考场编排":
         buf = io.BytesIO(); doc.save(buf); buf.seek(0)
         return buf
 
-    st.title("📝 全科考场编排 (全兼容智能版)")
-    st.info("💡 **系统已自动开启兼容模式**：支持高一、高二、高三所有表头格式（模糊识别准考证、班级等）。")
+    st.title("📝 全科考场编排 (智能独立排位版)")
+    st.info("💡 **系统已开启智能兼容模式**：您可以直接上传一张只有【学号】和【班级】的干干净净的表，系统将为您全自动排满所有考场！")
     up_exam = st.file_uploader("📂 第一步：上传【考生信息表】", type=['xlsx', 'xls', 'csv'])
 
     if up_exam:
@@ -594,7 +615,6 @@ elif app_mode == "📝 全科考场编排":
 
         st.markdown("### 📅 第二步：确认考试时间")
         all_subs = set(['语文', '数学'])
-        # 兼容性科目提取
         for col in df_stu.columns:
             if any(kw in str(col) for kw in ['语种', '选考', '科类', '科目', '首选', '再选']):
                 for val in df_stu[col].dropna().unique():
@@ -607,8 +627,8 @@ elif app_mode == "📝 全科考场编排":
         final_time_map = dict(zip(edited_time_df['科目'], edited_time_df['考试时间']))
 
         if st.button("🚀 第三步：生成准考证与考场数据", type="primary"):
-            with st.spinner("正在启动兼容引擎，进行智能排位..."):
-                sch = ExamScheduler(df_stu, room_capacity, final_time_map, enable_balance, force_dynamic)
+            with st.spinner("正在启动全自动排位引擎..."):
+                sch = ExamScheduler(df_stu, room_capacity, final_time_map, enable_balance, assign_mode)
                 res, slips, export = sch.arrange()
                 st.session_state['exam_result'], st.session_state['exam_slips'], st.session_state['slip_export_data'] = res, slips, export
 
@@ -644,7 +664,7 @@ elif app_mode == "📝 全科考场编排":
             word_door = export_door_signs_to_word(st.session_state['exam_result'], exam_name)
             st.download_button("🚪 下载 考场门贴 (Word)", word_door, f"英华_{exam_name}_门贴.docx", type="primary", use_container_width=True)
 
-        tabs = st.tabs(["🎫 预览准考证", "📋 各科详情"])
+        tabs = st.tabs(["🎫 预览准考证", "📋 各科明细预览"])
         with tabs[0]:
             html = '<div style="display:flex; flex-wrap:wrap; justify-content:center; gap:15px; padding:10px; background:#f0f2f6;">'
             for zkz, info in list(st.session_state['exam_slips'].items())[:15]: 
